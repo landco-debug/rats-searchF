@@ -138,8 +138,10 @@ private:
     bool hasUserFacingInfo(const QJsonObject& info) const;
     bool hasReleaseSpecificInfo(const QJsonObject& info) const;
     void mergeInfoPatch(const QJsonObject& patch, bool persist = true);
+    void enrichFromTorrentIdentity();
     void updateTrackerInfoDisplay(const QJsonObject& info);
     void updateTechnicalInfoDisplay(const QJsonObject& info);
+    void rebuildMetadataLinks(const QJsonObject& info);
     void loadPosterImage(const QString& url);
 
     // Tracker info UI elements
