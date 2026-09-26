@@ -348,7 +348,7 @@ jobs:
           
           # Create a temporary directory for DMG contents
           mkdir -p dmg-contents
-          cp -R build/bin/RatsSearch.app dmg-contents/
+          cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
           ln -s /Applications dmg-contents/Applications
           
           # Create DMG
@@ -515,7 +515,7 @@ jobs:
           
           # Create a temporary directory for DMG contents
           mkdir -p dmg-contents
-          cp -R build/bin/RatsSearch.app dmg-contents/
+          cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
           ln -s /Applications dmg-contents/Applications
           
           # Create DMG
