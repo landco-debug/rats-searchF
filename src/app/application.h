@@ -18,6 +18,7 @@ namespace rats::net {
 class P2PTransport;
 class TorrentEngine;
 class Crawler;
+class RutorSearchClient;
 } // namespace rats::net
 namespace rats::rest {
 class ApiRouter;
@@ -92,6 +93,7 @@ public:
     net::P2PTransport* transport() const;
     net::TorrentEngine* engine() const;
     net::Crawler* crawler() const;
+    net::RutorSearchClient* rutorSearch() const;
     service::IndexingService* indexing() const;
     service::SearchService* search() const;
     service::DownloadService* downloads() const;

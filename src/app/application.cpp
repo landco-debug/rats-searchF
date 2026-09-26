@@ -11,6 +11,7 @@
 #include "data/torrent_repository.h"
 #include "domain/torrent.h"
 #include "net/crawler.h"
+#include "net/rutor_search_client.h"
 #include "net/p2p_transport.h"
 #include "net/swarm_scraper.h"
 #include "net/torrent_engine.h"
@@ -58,6 +59,7 @@ struct Application::Private {
     std::unique_ptr<net::Crawler> crawler;
     std::unique_ptr<net::SwarmScraper> swarmScraper;
     std::unique_ptr<net::TrackerSiteScraper> siteScraper;
+    std::unique_ptr<net::RutorSearchClient> rutorSearch;
 
     // Services
     std::unique_ptr<service::FilterPolicy> filter;
@@ -122,6 +124,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->crawler = std::make_unique<net::Crawler>(d_->transport.get());
     d_->swarmScraper = std::make_unique<net::SwarmScraper>();
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
+    d_->rutorSearch = std::make_unique<net::RutorSearchClient>();
 
     // --- Services ---------------------------------------------------------
     d_->filter = std::make_unique<service::FilterPolicy>();
@@ -296,6 +299,7 @@ void Application::stop()
     // so no fresh tracker requests are issued during shutdown, and in-flight
     // announces / HTTP requests are drained rather than left blocking teardown.
     d_->crawler->stop();
+    d_->rutorSearch->cancel();
     d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
@@ -341,6 +345,10 @@ net::TorrentEngine* Application::engine() const
 net::Crawler* Application::crawler() const
 {
     return d_->crawler.get();
+}
+net::RutorSearchClient* Application::rutorSearch() const
+{
+    return d_->rutorSearch.get();
 }
 service::IndexingService* Application::indexing() const
 {

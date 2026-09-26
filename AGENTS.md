@@ -66,3 +66,27 @@ Still intentionally not implemented:
 
 Next stage:
 - wire one `RutorSearchClient` into `Application` and expose it through an accessor, without changing the search UI yet.
+
+
+### Stage 3 — Application ownership, still no search UI change
+
+Commit message: `feat: own strict Rutor client in Application`.
+
+Stage 2 verification before starting this stage:
+- macOS ARM (Apple Silicon): Build success, Run tests success;
+- Linux x64: Build success, Run tests success;
+- Stage 2 remained isolated from the GUI search path.
+
+Implemented:
+- `Application::Private` now owns exactly one `net::RutorSearchClient`;
+- the client is constructed with the other network-layer adapters;
+- `Application::rutorSearch()` exposes a non-owning accessor to front-ends;
+- shutdown calls `cancel()` before tracker/network teardown so no Rutor HTTP reply can outlive application shutdown.
+
+Still intentionally not implemented:
+- `MainWindow::performSearch()` is untouched;
+- existing local/P2P/DHT search results are still the user-visible behavior;
+- no details-panel changes yet.
+
+Next stage:
+- replace only the Search tab orchestration with strict Rutor results, while leaving torrent download/P2P infrastructure intact.
