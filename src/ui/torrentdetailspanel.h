@@ -119,8 +119,9 @@ private:
     QPushButton* closeButton_;
 
     // Multi-source torrent information resolver. Tracker websites are tried
-    // first, then connected Rats Search peers, then raw BitTorrent DHT/BEP 9
-    // metadata. Every path terminates with either data or a visible error.
+    // first, then connected Rats Search peers, an exact public info-hash index,
+    // and finally raw BitTorrent DHT/BEP 9 metadata. Every path terminates with
+    // either data or a visible error.
     void requestTrackerRefresh();
     void requestPeerInfoFallback(const QString& hash);
     void requestPublicIndexFallback(const QString& hash);
@@ -134,7 +135,7 @@ private:
     QWidget* trackerInfoWidget_; // Container for all tracker info
     QLabel* trackerInfoLoadingLabel_; // Current resolution stage / terminal error
     QLabel* trackerInfoSourceLabel_; // Which fallback source produced the data
-    QLabel* trackerUrlsLabel_; // Raw tracker URLs from BEP 9 metadata
+    QLabel* trackerUrlsLabel_; // Raw tracker URLs from fallback metadata
     QPushButton* retryInfoButton_; // Retry all resolution paths after failure
     QLabel* posterLabel_; // Poster/cover image
     QLabel* descriptionLabel_; // Description text (expandable)
