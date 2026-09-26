@@ -716,10 +716,14 @@ bool TorrentRepository::updateTrackerCounts(const QString& hash, int seeders, in
     const RowSlot slot = resolve(hash);
     if (!slot.taken || !slot.ours)
         return false;
-    return db_->update(kTorrents,
-        { { "seeders", seeders }, { "leechers", leechers }, { "completed", completed },
-            { "trackersChecked", QDateTime::currentSecsSinceEpoch() } },
-        { { "id", slot.id } });
+    if (!db_->update(kTorrents,
+            { { "seeders", seeders }, { "leechers", leechers }, { "completed", completed },
+                { "trackersChecked", QDateTime::currentSecsSinceEpoch() } },
+            { { "id", slot.id } })) {
+        return false;
+    }
+    emit torrentUpdated(hash);
+    return true;
 }
 
 bool TorrentRepository::updateFiles(const QString& hash, const QVector<File>& files)
@@ -759,7 +763,10 @@ bool TorrentRepository::mergeInfo(const QString& hash, const QJsonObject& info)
     QJsonObject merged = existing->info;
     for (auto it = info.constBegin(); it != info.constEnd(); ++it)
         merged[it.key()] = it.value();
-    return db_->update(kTorrents, { { "info", merged } }, { { "id", existing->id } });
+    if (!db_->update(kTorrents, { { "info", merged } }, { { "id", existing->id } }))
+        return false;
+    emit torrentUpdated(hash);
+    return true;
 }
 
 bool TorrentRepository::updateClassification(const QString& hash, ContentType type, ContentCategory category)
