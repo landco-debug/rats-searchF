@@ -968,7 +968,7 @@ void TorrentDetailsPanel::requestPublicIndexFallback(const QString& hash)
 
     QNetworkReply* reply = posterNetworkManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
-        const auto cleanup = qScopeGuard([reply]() { reply->deleteLater(); });
+        reply->deleteLater();
         if (hash != currentHash_ || infoResolved_)
             return;
 
