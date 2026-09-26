@@ -893,6 +893,7 @@ void TorrentDetailsPanel::requestTrackerRefresh()
     infoResolved_ = false;
     trackerLookupFinished_ = false;
     peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
     dhtFallbackRequested_ = false;
     lastInfoError_.clear();
 
