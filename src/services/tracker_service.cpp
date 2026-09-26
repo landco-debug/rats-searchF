@@ -12,6 +12,7 @@ TrackerService::TrackerService(net::SwarmScraper* swarmScraper, net::TrackerSite
 {
     connect(swarmScraper_, &net::SwarmScraper::scraped, this, &TrackerService::onCountsScraped);
     connect(siteScraper_, &net::TrackerSiteScraper::scraped, this, &TrackerService::onInfoScraped);
+    connect(siteScraper_, &net::TrackerSiteScraper::scrapeFinished, this, &TrackerService::infoCheckFinished);
 }
 
 void TrackerService::setCountScrapingEnabled(bool enabled)
@@ -42,8 +43,11 @@ void TrackerService::checkCounts(const QString& hash)
 
 void TrackerService::checkInfo(const QString& hash, const QString& name)
 {
-    if (infoEnabled_)
+    if (infoEnabled_) {
         siteScraper_->scrape(hash, name);
+    } else {
+        emit infoCheckFinished(hash, false);
+    }
 }
 
 void TrackerService::onTorrentIndexed(const domain::Torrent& torrent)
@@ -59,6 +63,9 @@ void TrackerService::onCountsScraped(const QString& hash, int seeders, int leech
 
 void TrackerService::onInfoScraped(const QString& hash, const QJsonObject& info)
 {
+    // Emit regardless of persistence: a search hit can come from a peer and may
+    // not have been cloned into our repository yet.
+    emit infoAvailable(hash, info);
     repository_->mergeInfo(hash, info);
 }
 

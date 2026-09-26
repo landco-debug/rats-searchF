@@ -64,6 +64,9 @@ private slots:
     void onFavoriteClicked();
     // Repository signalled that this torrent's row changed (tracker counts/info).
     void onTorrentUpdated(const QString& hash);
+    void onTrackerInfoAvailable(const QString& hash, const QJsonObject& info);
+    void onTrackerInfoCheckFinished(const QString& hash, bool found);
+    void onRemoteTorrentReceived(const QString& hash, const QJsonObject& data);
 
 private:
     void setupUi();
@@ -116,14 +119,25 @@ private:
     QPushButton* copyHashButton_;
     QPushButton* closeButton_;
 
-    // Tracker info scraping (descriptions/posters from tracker websites)
+    // Multi-source torrent information resolver. Tracker websites are tried
+    // first, then connected Rats Search peers, an exact public info-hash index,
+    // and finally raw BitTorrent DHT/BEP 9 metadata. Every path terminates with
+    // either data or a visible error.
     void requestTrackerRefresh();
+    void requestPeerInfoFallback(const QString& hash);
+    void requestPublicIndexFallback(const QString& hash);
+    void requestDhtMetadataFallback(const QString& hash);
+    void showInfoUnavailable(const QString& hash, const QString& reason = QString());
+    bool hasUsefulTrackerInfo(const QJsonObject& info) const;
     void updateTrackerInfoDisplay(const QJsonObject& info);
     void loadPosterImage(const QString& url);
 
     // Tracker info UI elements
     QWidget* trackerInfoWidget_; // Container for all tracker info
-    QLabel* trackerInfoLoadingLabel_; // "Loading tracker info..." indicator
+    QLabel* trackerInfoLoadingLabel_; // Current resolution stage / terminal error
+    QLabel* trackerInfoSourceLabel_; // Which fallback source produced the data
+    QLabel* trackerUrlsLabel_; // Raw tracker URLs from fallback metadata
+    QPushButton* retryInfoButton_; // Retry all resolution paths after failure
     QLabel* posterLabel_; // Poster/cover image
     QLabel* descriptionLabel_; // Description text (expandable)
     QPushButton* descriptionToggle_; // "Show more / Show less" button
@@ -138,6 +152,14 @@ private:
     rats::domain::Torrent currentTorrent_;
     bool isDownloading_ = false;
     bool hasVoted_ = false;
+
+    // State for the current hash's staged information lookup.
+    bool infoResolved_ = false;
+    bool trackerLookupFinished_ = false;
+    bool peerFallbackRequested_ = false;
+    bool publicIndexFallbackRequested_ = false;
+    bool dhtFallbackRequested_ = false;
+    QString lastInfoError_;
 };
 
 #endif // TORRENTDETAILSPANEL_H

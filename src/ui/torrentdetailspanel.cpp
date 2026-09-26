@@ -5,6 +5,9 @@
 #include "app/favorites_store.h"
 #include "data/torrent_repository.h"
 #include "domain/content.h"
+#include "domain/torrent_codec.h"
+#include "net/torrent_engine.h"
+#include "peer/peer_api.h"
 #include "services/download_service.h"
 #include "services/tracker_service.h"
 #include "services/voting_service.h"
@@ -17,8 +20,11 @@
 #include <QFont>
 #include <QFrame>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPixmap>
+#include <QPointer>
 #include <QScrollArea>
 #include <QStyle>
 #include <QTimer>
@@ -192,15 +198,36 @@ void TorrentDetailsPanel::setupUi()
     sepTracker->setFixedHeight(1);
     trackerInfoLayout->addWidget(sepTracker);
 
-    QLabel* trackerInfoTitle = new QLabel(tr("Tracker Info"));
+    QLabel* trackerInfoTitle = new QLabel(tr("Torrent Info"));
     trackerInfoTitle->setObjectName("sectionTitle");
     trackerInfoLayout->addWidget(trackerInfoTitle);
 
     // Loading indicator
     trackerInfoLoadingLabel_ = new QLabel(tr("🔍 Loading tracker info..."));
     trackerInfoLoadingLabel_->setObjectName("trackerLoadingLabel");
+    trackerInfoLoadingLabel_->setWordWrap(true);
     trackerInfoLoadingLabel_->hide();
     trackerInfoLayout->addWidget(trackerInfoLoadingLabel_);
+
+    trackerInfoSourceLabel_ = new QLabel();
+    trackerInfoSourceLabel_->setObjectName("hintLabel");
+    trackerInfoSourceLabel_->setWordWrap(true);
+    trackerInfoSourceLabel_->hide();
+    trackerInfoLayout->addWidget(trackerInfoSourceLabel_);
+
+    trackerUrlsLabel_ = new QLabel();
+    trackerUrlsLabel_->setObjectName("hintLabel");
+    trackerUrlsLabel_->setWordWrap(true);
+    trackerUrlsLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    trackerUrlsLabel_->hide();
+    trackerInfoLayout->addWidget(trackerUrlsLabel_);
+
+    retryInfoButton_ = new QPushButton(tr("Retry information lookup"));
+    retryInfoButton_->setObjectName("secondaryButton");
+    retryInfoButton_->setCursor(Qt::PointingHandCursor);
+    retryInfoButton_->hide();
+    connect(retryInfoButton_, &QPushButton::clicked, this, [this]() { requestTrackerRefresh(); });
+    trackerInfoLayout->addWidget(retryInfoButton_);
 
     // Poster image
     posterLabel_ = new QLabel();
@@ -419,12 +446,28 @@ void TorrentDetailsPanel::setApplication(rats::app::Application* app)
     if (auto* fav = app_->favorites()) {
         connect(fav, &rats::app::FavoritesStore::favoritesChanged, this, &TorrentDetailsPanel::updateFavoriteButton);
     }
+    if (auto* trackers = app_->trackers()) {
+        connect(trackers, &rats::service::TrackerService::infoAvailable, this,
+            &TorrentDetailsPanel::onTrackerInfoAvailable);
+        connect(trackers, &rats::service::TrackerService::infoCheckFinished, this,
+            &TorrentDetailsPanel::onTrackerInfoCheckFinished);
+    }
+    if (auto* peers = app_->peerApi()) {
+        connect(peers, &rats::peer::PeerApi::remoteTorrentReceived, this,
+            &TorrentDetailsPanel::onRemoteTorrentReceived);
+    }
 }
 
 void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
 {
     currentTorrent_ = torrent;
     currentHash_ = torrent.hash;
+    infoResolved_ = hasUsefulTrackerInfo(torrent.info);
+    trackerLookupFinished_ = false;
+    peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
+    dhtFallbackRequested_ = false;
+    lastInfoError_.clear();
 
     // Check voted status from the voting service (distributed store).
     hasVoted_ = (app_ && app_->voting()) ? app_->voting()->hasVoted(torrent.hash) : false;
@@ -479,17 +522,20 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
         resetDownloadState();
     }
 
-    // Show existing tracker info from database if available
-    if (!torrent.info.isEmpty() && torrent.info.contains("trackers")) {
+    // Show existing extended info from any source (tracker websites, peers or
+    // raw BitTorrent metadata) when available.
+    if (infoResolved_) {
         updateTrackerInfoDisplay(torrent.info);
     } else {
-        // Reset tracker info UI
         trackerInfoWidget_->hide();
+        trackerInfoLoadingLabel_->hide();
+        trackerInfoSourceLabel_->hide();
+        trackerUrlsLabel_->hide();
+        retryInfoButton_->hide();
         posterLabel_->hide();
         descriptionLabel_->hide();
         descriptionToggle_->hide();
         trackerLinksWidget_->hide();
-        trackerInfoLoadingLabel_->hide();
         fullDescription_.clear();
         descriptionExpanded_ = false;
     }
@@ -533,8 +579,19 @@ void TorrentDetailsPanel::clear()
     descriptionToggle_->hide();
     trackerLinksWidget_->hide();
     trackerInfoLoadingLabel_->hide();
+    trackerInfoSourceLabel_->hide();
+    trackerInfoSourceLabel_->clear();
+    trackerUrlsLabel_->hide();
+    trackerUrlsLabel_->clear();
+    retryInfoButton_->hide();
     fullDescription_.clear();
     descriptionExpanded_ = false;
+    infoResolved_ = false;
+    trackerLookupFinished_ = false;
+    peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
+    dhtFallbackRequested_ = false;
+    lastInfoError_.clear();
 
     // Remove old tracker link buttons
     while (trackerLinksLayout_->count() > 1) { // keep the stretch
@@ -792,51 +849,375 @@ void TorrentDetailsPanel::updateTrackerStats(int seeders, int leechers, int comp
 // service.
 // ============================================================================
 
+bool TorrentDetailsPanel::hasUsefulTrackerInfo(const QJsonObject& info) const
+{
+    if (info.isEmpty())
+        return false;
+    if (!info.value("poster").toString().isEmpty() || !info.value("description").toString().isEmpty())
+        return true;
+    if (info.value("rutrackerThreadId").toInt() > 0 || info.value("nyaaThreadId").toInt() > 0)
+        return true;
+    if (!info.value("trackers").toArray().isEmpty() || !info.value("trackerUrls").toArray().isEmpty())
+        return true;
+    return !info.value("metadataSource").toString().isEmpty();
+}
+
 void TorrentDetailsPanel::requestTrackerRefresh()
 {
-    if (!app_ || currentHash_.isEmpty()) {
+    if (!app_ || currentHash_.isEmpty())
         return;
-    }
 
     auto* trackers = app_->trackers();
-    if (!trackers) {
+    if (!trackers)
+        return;
+
+    // Seeder/leecher refresh is independent of the richer information resolver.
+    trackers->checkCounts(currentHash_);
+
+    if (hasUsefulTrackerInfo(currentTorrent_.info)) {
+        infoResolved_ = true;
+        updateTrackerInfoDisplay(currentTorrent_.info);
+
+        // A DHT/peer fallback is useful enough to display immediately, but a
+        // later tracker-site hit may still add a poster, description or direct
+        // tracker-page link. Keep enriching those fallback-only records in the
+        // background without putting the UI back into a loading state.
+        const bool fallbackOnly = !currentTorrent_.info.value("metadataSource").toString().isEmpty()
+            && currentTorrent_.info.value("trackers").toArray().isEmpty()
+            && currentTorrent_.info.value("rutrackerThreadId").toInt() <= 0
+            && currentTorrent_.info.value("nyaaThreadId").toInt() <= 0;
+        if (fallbackOnly)
+            trackers->checkInfo(currentHash_, currentTorrent_.name);
         return;
     }
 
-    // Refresh seeder/leecher counts.
-    trackers->checkCounts(currentHash_);
+    const QString hash = currentHash_;
+    infoResolved_ = false;
+    trackerLookupFinished_ = false;
+    peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
+    dhtFallbackRequested_ = false;
+    lastInfoError_.clear();
 
-    // Scrape tracker websites for descriptions/posters when we don't already
-    // have them. Show the loading indicator while the scrape runs.
-    bool haveInfo = false;
-    if (!currentTorrent_.info.isEmpty() && currentTorrent_.info.contains("trackers")) {
-        haveInfo = !currentTorrent_.info["trackers"].toArray().isEmpty();
+    trackerInfoWidget_->show();
+    retryInfoButton_->hide();
+    trackerInfoSourceLabel_->hide();
+    trackerUrlsLabel_->hide();
+    trackerInfoLoadingLabel_->setText(tr("🔍 Searching tracker sites…"));
+    trackerInfoLoadingLabel_->show();
+
+    // Stage 1: the existing site-specific scrapers (RuTracker + Nyaa).
+    trackers->checkInfo(hash, currentTorrent_.name);
+
+    // Do not make the user wait for a slow website timeout before trying the
+    // decentralized paths. Peers are cheap, so ask them shortly afterwards.
+    QTimer::singleShot(1500, this, [this, hash]() {
+        if (hash == currentHash_ && !infoResolved_)
+            requestPeerInfoFallback(hash);
+    });
+
+    // Stage 3: query a public hash index. Unlike title search this is exact —
+    // the 40-char info hash is the identity, so there is no fuzzy-match risk.
+    QTimer::singleShot(2500, this, [this, hash]() {
+        if (hash == currentHash_ && !infoResolved_)
+            requestPublicIndexFallback(hash);
+    });
+
+    // Stage 4 starts even if a peer or public service never answers. This fetches
+    // only BitTorrent metadata (BEP 9), never the torrent's content.
+    QTimer::singleShot(5000, this, [this, hash]() {
+        if (hash == currentHash_ && !infoResolved_)
+            requestDhtMetadataFallback(hash);
+    });
+
+    // Hard terminal bound. No path is allowed to leave "Loading…" forever.
+    QTimer::singleShot(35000, this, [this, hash]() {
+        if (hash == currentHash_ && !infoResolved_)
+            showInfoUnavailable(hash, lastInfoError_);
+    });
+}
+
+void TorrentDetailsPanel::requestPeerInfoFallback(const QString& hash)
+{
+    if (!app_ || hash != currentHash_ || infoResolved_ || peerFallbackRequested_)
+        return;
+    peerFallbackRequested_ = true;
+
+    trackerInfoLoadingLabel_->setText(tr("🔎 Asking connected Rats Search peers…"));
+    trackerInfoLoadingLabel_->show();
+
+    const int sent = app_->peerApi() ? app_->peerApi()->requestTorrentFromPeers(hash, false) : 0;
+    if (sent == 0) {
+        lastInfoError_ = tr("No connected peer could be queried.");
+        requestPublicIndexFallback(hash);
     }
-    if (!haveInfo) {
-        trackerInfoWidget_->show();
-        trackerInfoLoadingLabel_->show();
-        trackers->checkInfo(currentHash_, currentTorrent_.name);
+}
+
+void TorrentDetailsPanel::requestPublicIndexFallback(const QString& hash)
+{
+    if (!app_ || hash != currentHash_ || infoResolved_ || publicIndexFallbackRequested_)
+        return;
+    publicIndexFallbackRequested_ = true;
+
+    trackerInfoLoadingLabel_->setText(tr("🌐 Looking up the info hash in a public torrent index…"));
+    trackerInfoLoadingLabel_->show();
+
+    // Magnetz exposes an unauthenticated exact-infohash endpoint. It is only a
+    // fallback: failure never blocks the fully decentralized DHT/BEP 9 path.
+    QUrl url(QStringLiteral("https://magnetz.eu/api/magnets/infohash/%1").arg(hash));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("RatsSearch/2"));
+    request.setTransferTimeout(8000);
+
+    QNetworkReply* reply = posterNetworkManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
+        reply->deleteLater();
+        if (hash != currentHash_ || infoResolved_)
+            return;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            lastInfoError_ = tr("Public index lookup failed: %1").arg(reply->errorString());
+            requestDhtMetadataFallback(hash);
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        const QJsonObject data = document.object().value(QStringLiteral("data")).toObject();
+        const QString returnedHash = data.value(QStringLiteral("info_hash")).toString();
+
+        if (parseError.error != QJsonParseError::NoError || data.isEmpty()
+            || returnedHash.compare(hash, Qt::CaseInsensitive) != 0) {
+            lastInfoError_ = tr("Public index returned no matching torrent.");
+            requestDhtMetadataFallback(hash);
+            return;
+        }
+
+        QJsonObject info;
+        info["metadataSource"] = QStringLiteral("Magnetz public index");
+        const QString webUrl = data.value(QStringLiteral("web_url")).toString();
+        if (!webUrl.isEmpty())
+            info["magnetzUrl"] = webUrl;
+
+        const QString creator = data.value(QStringLiteral("creator")).toString();
+        if (!creator.isEmpty())
+            info["createdBy"] = creator;
+
+        const QString created = data.value(QStringLiteral("creation_date")).toString();
+        const QDateTime createdAt = QDateTime::fromString(created, Qt::ISODate);
+        if (createdAt.isValid())
+            info["creationDate"] = createdAt.toSecsSinceEpoch();
+
+        if (data.contains(QStringLiteral("is_private")))
+            info["private"] = data.value(QStringLiteral("is_private")).toBool();
+        if (data.contains(QStringLiteral("is_verified")))
+            info["verified"] = data.value(QStringLiteral("is_verified")).toBool();
+        if (data.contains(QStringLiteral("is_active")))
+            info["active"] = data.value(QStringLiteral("is_active")).toBool();
+
+        const QJsonObject release = data.value(QStringLiteral("release")).toObject();
+        QStringList releaseBits;
+        for (const char* key : { "type", "resolution", "format" }) {
+            const QString value = release.value(QLatin1String(key)).toString();
+            if (!value.isEmpty())
+                releaseBits.append(value);
+        }
+        if (!releaseBits.isEmpty())
+            info["metadataNote"] = tr("Release: %1").arg(releaseBits.join(QStringLiteral(" · ")));
+
+        const QJsonArray trackers = data.value(QStringLiteral("trackers")).toArray();
+        if (!trackers.isEmpty())
+            info["trackerUrls"] = trackers;
+
+        QVector<rats::domain::File> files;
+        const QJsonArray fileArray = data.value(QStringLiteral("files")).toArray();
+        files.reserve(fileArray.size());
+        for (const QJsonValue& value : fileArray) {
+            const QJsonObject file = value.toObject();
+            const QString path = file.value(QStringLiteral("path")).toString();
+            const qint64 size = file.value(QStringLiteral("size")).toVariant().toLongLong();
+            if (!path.isEmpty())
+                files.append(rats::domain::File { path, size });
+        }
+
+        if (app_ && app_->torrents()) {
+            if (!files.isEmpty())
+                app_->torrents()->updateFiles(hash, files);
+            app_->torrents()->mergeInfo(hash, info);
+        }
+
+        currentTorrent_.info = info;
+        infoResolved_ = true;
+        updateTrackerInfoDisplay(info);
+    });
+}
+
+void TorrentDetailsPanel::requestDhtMetadataFallback(const QString& hash)
+{
+    if (!app_ || hash != currentHash_ || infoResolved_ || dhtFallbackRequested_)
+        return;
+    dhtFallbackRequested_ = true;
+
+    auto* engine = app_->engine();
+    if (!engine) {
+        lastInfoError_ = tr("BitTorrent metadata engine is unavailable.");
+        if (trackerLookupFinished_)
+            showInfoUnavailable(hash, lastInfoError_);
+        return;
     }
+
+    trackerInfoLoadingLabel_->setText(tr("🧲 Fetching metadata from the BitTorrent DHT…"));
+    trackerInfoLoadingLabel_->show();
+
+    QPointer<TorrentDetailsPanel> self(this);
+    const bool started = engine->fetchMetadata(
+        hash,
+        [self, hash](const rats::net::TorrentMetadata& meta, const QString& error) {
+            if (!self)
+                return;
+
+            QMetaObject::invokeMethod(
+                self,
+                [self, hash, meta, error]() {
+                    if (!self || hash != self->currentHash_ || self->infoResolved_)
+                        return;
+
+                    if (!meta.valid) {
+                        self->lastInfoError_ = error.isEmpty() ? self->tr("BitTorrent metadata was not found.") : error;
+                        if (self->trackerLookupFinished_)
+                            self->showInfoUnavailable(hash, self->lastInfoError_);
+                        return;
+                    }
+
+                    QJsonObject info;
+                    info["metadataSource"] = QStringLiteral("BitTorrent DHT / BEP 9");
+                    if (!meta.comment.isEmpty())
+                        info["description"] = meta.comment;
+                    else
+                        info["metadataNote"] = self->tr("Metadata retrieved directly from the BitTorrent swarm.");
+                    if (!meta.createdBy.isEmpty())
+                        info["createdBy"] = meta.createdBy;
+                    if (meta.creationDate > 0)
+                        info["creationDate"] = meta.creationDate;
+                    info["private"] = meta.isPrivate;
+
+                    QJsonArray trackers;
+                    for (const QString& url : meta.trackers)
+                        trackers.append(url);
+                    if (!trackers.isEmpty())
+                        info["trackerUrls"] = trackers;
+
+                    QJsonArray webSeeds;
+                    for (const QString& url : meta.webSeeds)
+                        webSeeds.append(url);
+                    if (!webSeeds.isEmpty())
+                        info["webSeeds"] = webSeeds;
+
+                    QVector<rats::domain::File> files;
+                    files.reserve(meta.files.size());
+                    for (const auto& file : meta.files)
+                        files.append(rats::domain::File { file.path, file.size });
+
+                    if (self->app_ && self->app_->torrents()) {
+                        if (!files.isEmpty())
+                            self->app_->torrents()->updateFiles(hash, files);
+                        self->app_->torrents()->mergeInfo(hash, info);
+                    }
+
+                    self->currentTorrent_.info = info;
+                    self->infoResolved_ = true;
+                    self->updateTrackerInfoDisplay(info);
+                },
+                Qt::QueuedConnection);
+        },
+        25000);
+
+    if (!started) {
+        lastInfoError_ = tr("BitTorrent metadata engine is unavailable.");
+        if (trackerLookupFinished_)
+            showInfoUnavailable(hash, lastInfoError_);
+    }
+}
+
+void TorrentDetailsPanel::showInfoUnavailable(const QString& hash, const QString& reason)
+{
+    if (hash != currentHash_ || infoResolved_)
+        return;
+
+    trackerInfoWidget_->show();
+    trackerInfoSourceLabel_->hide();
+    trackerUrlsLabel_->hide();
+    descriptionLabel_->hide();
+    descriptionToggle_->hide();
+    posterLabel_->hide();
+    trackerLinksWidget_->hide();
+
+    QString text = tr("⚠️ Extended information is unavailable. Tracker sites, connected Rats Search peers, "
+                      "a public info-hash index, and BitTorrent DHT metadata were checked.");
+    if (!reason.isEmpty())
+        text += QStringLiteral("\n") + reason;
+    trackerInfoLoadingLabel_->setText(text);
+    trackerInfoLoadingLabel_->show();
+    retryInfoButton_->show();
+}
+
+void TorrentDetailsPanel::onTrackerInfoAvailable(const QString& hash, const QJsonObject& info)
+{
+    if (hash != currentHash_ || !hasUsefulTrackerInfo(info))
+        return;
+
+    // Merge into the in-memory copy so a later repository refresh cannot make
+    // the just-received direct payload disappear for a remote-only hit.
+    for (auto it = info.constBegin(); it != info.constEnd(); ++it)
+        currentTorrent_.info.insert(it.key(), it.value());
+
+    infoResolved_ = true;
+    updateTrackerInfoDisplay(currentTorrent_.info);
+}
+
+void TorrentDetailsPanel::onTrackerInfoCheckFinished(const QString& hash, bool found)
+{
+    if (hash != currentHash_)
+        return;
+
+    trackerLookupFinished_ = true;
+    if (found || infoResolved_)
+        return;
+
+    requestPeerInfoFallback(hash);
+    requestPublicIndexFallback(hash);
+    if (dhtFallbackRequested_ && !lastInfoError_.isEmpty())
+        showInfoUnavailable(hash, lastInfoError_);
+}
+
+void TorrentDetailsPanel::onRemoteTorrentReceived(const QString& hash, const QJsonObject& data)
+{
+    if (hash != currentHash_ || infoResolved_)
+        return;
+
+    const rats::domain::Torrent peerTorrent = rats::domain::codec::torrentFromJson(data);
+    if (!hasUsefulTrackerInfo(peerTorrent.info))
+        return;
+
+    currentTorrent_.info = peerTorrent.info;
+    infoResolved_ = true;
+    updateTrackerInfoDisplay(peerTorrent.info);
 }
 
 void TorrentDetailsPanel::onTorrentUpdated(const QString& hash)
 {
-    if (hash != currentHash_ || !app_ || !app_->torrents()) {
+    if (hash != currentHash_ || !app_ || !app_->torrents())
         return;
-    }
 
     auto updated = app_->torrents()->get(hash, false);
-    if (!updated) {
+    if (!updated)
         return;
-    }
 
-    // Refresh swarm counts.
     updateTrackerStats(updated->seeders, updated->leechers, updated->completed);
 
-    // Refresh scraped tracker info (poster/description/links).
     currentTorrent_.info = updated->info;
-    trackerInfoLoadingLabel_->hide();
-    if (!updated->info.isEmpty() && updated->info.contains("trackers")) {
+    if (hasUsefulTrackerInfo(updated->info)) {
+        infoResolved_ = true;
         updateTrackerInfoDisplay(updated->info);
     }
 }
@@ -845,6 +1226,29 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
 {
     trackerInfoWidget_->show();
     trackerInfoLoadingLabel_->hide();
+    retryInfoButton_->hide();
+
+    const QString source = info.value("metadataSource").toString();
+    if (!source.isEmpty()) {
+        trackerInfoSourceLabel_->setText(tr("Source: %1").arg(source));
+        trackerInfoSourceLabel_->show();
+    } else {
+        trackerInfoSourceLabel_->hide();
+    }
+
+    const QJsonArray trackerUrls = info.value("trackerUrls").toArray();
+    if (!trackerUrls.isEmpty()) {
+        QStringList urls;
+        for (const QJsonValue& value : trackerUrls) {
+            const QString url = value.toString();
+            if (!url.isEmpty())
+                urls.append(url);
+        }
+        trackerUrlsLabel_->setText(tr("Trackers:\n%1").arg(urls.join(QLatin1Char('\n'))));
+        trackerUrlsLabel_->show();
+    } else {
+        trackerUrlsLabel_->hide();
+    }
 
     // Poster image
     QString posterUrl = info["poster"].toString();
@@ -854,8 +1258,31 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         posterLabel_->hide();
     }
 
-    // Description
+    // Description. Raw BEP 9 metadata often has only a comment; otherwise show
+    // a concise note that the fallback succeeded rather than pretending there is
+    // a tracker-page description.
     QString description = info["description"].toString();
+    if (description.isEmpty())
+        description = info["metadataNote"].toString();
+
+    QStringList metadataDetails;
+    const QString createdBy = info.value("createdBy").toString();
+    if (!createdBy.isEmpty())
+        metadataDetails << tr("Created by: %1").arg(createdBy);
+    const qint64 creationDate = info.value("creationDate").toVariant().toLongLong();
+    if (creationDate > 0)
+        metadataDetails << tr("Created: %1").arg(QDateTime::fromSecsSinceEpoch(creationDate).toString("yyyy-MM-dd"));
+    if (info.contains("private"))
+        metadataDetails << (info.value("private").toBool() ? tr("Private torrent") : tr("Public torrent"));
+    if (info.contains("verified"))
+        metadataDetails << (info.value("verified").toBool() ? tr("Verified by public index") : tr("Not verified by public index"));
+    if (info.contains("active") && !info.value("active").toBool())
+        metadataDetails << tr("Marked inactive by public index");
+    if (!metadataDetails.isEmpty()) {
+        if (!description.isEmpty())
+            description += QStringLiteral("\n\n");
+        description += metadataDetails.join(QLatin1Char('\n'));
+    }
     if (!description.isEmpty()) {
         fullDescription_ = description;
         descriptionExpanded_ = false;
@@ -911,6 +1338,20 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
             QDesktopServices::openUrl(QUrl(QString("https://nyaa.si/view/%1").arg(nyaaThreadId)));
         });
         trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, nyaaBtn);
+        hasLinks = true;
+    }
+
+    // Public-index link (exact hash lookup fallback).
+    const QString magnetzUrl = info.value("magnetzUrl").toString();
+    if (!magnetzUrl.isEmpty()) {
+        QPushButton* magnetzBtn = new QPushButton(tr("🔗 Magnetz"));
+        magnetzBtn->setObjectName("trackerLinkButton");
+        magnetzBtn->setCursor(Qt::PointingHandCursor);
+        magnetzBtn->setToolTip(magnetzUrl);
+        connect(magnetzBtn, &QPushButton::clicked, this, [magnetzUrl]() {
+            QDesktopServices::openUrl(QUrl(magnetzUrl));
+        });
+        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, magnetzBtn);
         hasLinks = true;
     }
 

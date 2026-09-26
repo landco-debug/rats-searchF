@@ -239,9 +239,43 @@ foreach(QM_FILE ${QM_FILES})
 endforeach()
 file(APPEND ${TRANSLATION_QRC} "    </qresource>\n</RCC>\n")
 
-# Windows application icon
+# Platform application icons
 if(WIN32)
     set(WIN_RC_FILE resources/app.rc)
+endif()
+
+# macOS Finder/Dock icons come from the bundle's CFBundleIconFile, not from
+# QWidget::setWindowIcon(). Generate a proper .icns at build time from the
+# project's 512 px source image using tools that ship with macOS.
+if(APPLE)
+    set(MACOS_ICON_NAME "RatsSearch.icns")
+    set(MACOS_ICON_PATH "${CMAKE_CURRENT_BINARY_DIR}/${MACOS_ICON_NAME}")
+    set(MACOS_ICONSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/RatsSearch.iconset")
+    set(MACOS_ICON_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/512x512.png")
+
+    add_custom_command(
+        OUTPUT "${MACOS_ICON_PATH}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${MACOS_ICONSET_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MACOS_ICONSET_DIR}"
+        COMMAND /usr/bin/sips -z 16 16 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_16x16.png"
+        COMMAND /usr/bin/sips -z 32 32 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_16x16@2x.png"
+        COMMAND /usr/bin/sips -z 32 32 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_32x32.png"
+        COMMAND /usr/bin/sips -z 64 64 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_32x32@2x.png"
+        COMMAND /usr/bin/sips -z 128 128 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_128x128.png"
+        COMMAND /usr/bin/sips -z 256 256 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_128x128@2x.png"
+        COMMAND /usr/bin/sips -z 256 256 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_256x256.png"
+        COMMAND /usr/bin/sips -z 512 512 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_256x256@2x.png"
+        COMMAND /usr/bin/sips -z 512 512 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_512x512.png"
+        COMMAND /usr/bin/sips -z 1024 1024 "${MACOS_ICON_SOURCE}" --out "${MACOS_ICONSET_DIR}/icon_512x512@2x.png"
+        COMMAND /usr/bin/iconutil -c icns "${MACOS_ICONSET_DIR}" -o "${MACOS_ICON_PATH}"
+        DEPENDS "${MACOS_ICON_SOURCE}"
+        VERBATIM
+        COMMENT "Generating macOS application icon"
+    )
+    set_source_files_properties("${MACOS_ICON_PATH}" PROPERTIES
+        GENERATED TRUE
+        MACOSX_PACKAGE_LOCATION "Resources"
+    )
 endif()
 
 # Create executable
@@ -253,6 +287,7 @@ add_executable(${PROJECT_NAME} WIN32 MACOSX_BUNDLE
     ${TRANSLATION_QRC}
     ${QM_FILES}
     ${WIN_RC_FILE}
+    ${MACOS_ICON_PATH}
 )
 
 # Mirror the on-disk layout in IDEs for the executable's own sources.
@@ -335,6 +370,7 @@ endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "RatsSearch"
     MACOSX_BUNDLE_GUI_IDENTIFIER com.ratssearch.app
+    MACOSX_BUNDLE_ICON_FILE "${MACOS_ICON_NAME}"
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE

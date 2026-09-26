@@ -116,6 +116,34 @@ QByteArray assembleTorrentFile(const bt::TorrentInfo& info)
     }
     return buildTorrentBytes(infoDict, trackers);
 }
+
+TorrentMetadata metadataFromTorrentInfo(const bt::TorrentInfo& info)
+{
+    TorrentMetadata meta;
+    if (!info.is_valid() || !info.has_metadata())
+        return meta;
+
+    meta.valid = true;
+    meta.hash = QString::fromStdString(info.info_hash_hex()).toLower();
+    meta.name = QString::fromStdString(info.name());
+    meta.totalSize = static_cast<qint64>(info.total_size());
+    meta.comment = QString::fromStdString(info.comment());
+    meta.createdBy = QString::fromStdString(info.created_by());
+    meta.creationDate = static_cast<qint64>(info.creation_date());
+    meta.isPrivate = info.is_private();
+
+    for (const auto& file : info.files().files()) {
+        EngineFile f;
+        f.path = QString::fromStdString(file.path);
+        f.size = static_cast<qint64>(file.size);
+        meta.files.append(f);
+    }
+    for (const std::string& url : info.all_trackers())
+        meta.trackers.append(QString::fromStdString(url));
+    for (const std::string& url : info.web_seeds())
+        meta.webSeeds.append(QString::fromStdString(url));
+    return meta;
+}
 } // namespace
 #endif
 
@@ -192,21 +220,9 @@ TorrentMetadata TorrentEngine::readTorrentFile(const QString& torrentFile) const
 #ifdef RATS_SEARCH_FEATURES
     // Pure parse — thread-safe and free of any reactor-owned Torrent object.
     auto info = bt::TorrentInfo::from_file(torrentFile.toStdString());
-    if (!info || !info->is_valid()) {
+    if (!info || !info->is_valid())
         return meta;
-    }
-
-    meta.valid = true;
-    meta.hash = QString::fromStdString(info->info_hash_hex()).toLower();
-    meta.name = QString::fromStdString(info->name());
-    meta.totalSize = static_cast<qint64>(info->total_size());
-    for (size_t i = 0; i < info->files().files().size(); ++i) {
-        const auto& file = info->files().files()[i];
-        EngineFile f;
-        f.path = QString::fromStdString(file.path);
-        f.size = static_cast<qint64>(file.size);
-        meta.files.append(f);
-    }
+    meta = metadataFromTorrentInfo(*info);
 #else
     Q_UNUSED(torrentFile);
 #endif
@@ -417,6 +433,42 @@ bool TorrentEngine::createTorrentFile(const QString& path, const QString& output
     Q_UNUSED(comment);
     Q_UNUSED(progress);
     qWarning() << "TorrentEngine: RATS_SEARCH_FEATURES not enabled";
+    return false;
+#endif
+}
+
+bool TorrentEngine::fetchMetadata(const QString& hash, MetadataCallback callback, int timeoutMs)
+{
+#ifdef RATS_SEARCH_FEATURES
+    librats::Bittorrent* subsystem = transport_ ? transport_->bittorrent() : nullptr;
+    if (!transport_ || !transport_->isBitTorrentEnabled() || !subsystem || !subsystem->is_running())
+        return false;
+
+    if (const auto ih = toInfoHash(hash)) {
+        if (bt::Client* c = client()) {
+            if (const auto info = c->torrent_metadata(*ih)) {
+                callback(metadataFromTorrentInfo(*info), QString());
+                return true;
+            }
+        }
+    }
+
+    subsystem->get_torrent_metadata(
+        hash.toStdString(),
+        [callback = std::move(callback)](const bt::TorrentInfo& info, bool success, const std::string& error) {
+            if (!success || !info.is_valid() || !info.has_metadata()) {
+                callback(TorrentMetadata {},
+                    error.empty() ? QStringLiteral("metadata download failed") : QString::fromStdString(error));
+                return;
+            }
+            callback(metadataFromTorrentInfo(info), QString());
+        },
+        timeoutMs);
+    return true;
+#else
+    Q_UNUSED(hash);
+    Q_UNUSED(callback);
+    Q_UNUSED(timeoutMs);
     return false;
 #endif
 }

@@ -399,6 +399,18 @@ void PeerApi::requestTorrent(const QString& peerId, const QString& hash, bool in
         peerId, "torrent", QJsonObject { { "hash", hash }, { "options", QJsonObject { { "files", includeFiles } } } });
 }
 
+int PeerApi::requestTorrentFromPeers(const QString& hash, bool includeFiles)
+{
+    net::P2PTransport* transport = app_->transport();
+    if (!transport || hash.length() != 40)
+        return 0;
+
+    const int sent = transport->broadcastMessage(
+        "torrent", QJsonObject { { "hash", hash }, { "options", QJsonObject { { "files", includeFiles } } } });
+    qInfo() << "[PeerApi] broadcast torrent enrichment" << hash.left(8) << "to" << sent << "peer(s)";
+    return sent;
+}
+
 // ============================================================================
 // Peer lifecycle
 // ============================================================================

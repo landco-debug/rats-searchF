@@ -40,6 +40,12 @@ public:
     // its file list fetched and stored on demand.
     void requestTorrent(const QString& peerId, const QString& hash, bool includeFiles = true);
 
+    // Ask every currently connected Rats Search peer for the full record. This is
+    // an enrichment fallback for locally indexed torrents whose tracker-site
+    // metadata is missing; any peer that has the hash replies through the normal
+    // remoteTorrentReceived path.
+    int requestTorrentFromPeers(const QString& hash, bool includeFiles = false);
+
 signals:
     // A remote peer sent search hits (searchTorrent_response). Query is empty —
     // the wire protocol never echoes it back — and torrents is the raw wire array

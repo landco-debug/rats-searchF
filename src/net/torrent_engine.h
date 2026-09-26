@@ -47,6 +47,15 @@ struct TorrentMetadata {
     QString name;
     qint64 totalSize = 0;
     QVector<EngineFile> files;
+
+    // Optional metadata carried by a .torrent/BEP 9 response. These fields are
+    // useful as a generic fallback when tracker websites have no description.
+    QString comment;
+    QString createdBy;
+    qint64 creationDate = 0; // Unix seconds, 0 when absent
+    bool isPrivate = false;
+    QStringList trackers;
+    QStringList webSeeds;
 };
 
 // The outcome of a create-and-seed: everything needed to register the seeding
@@ -87,7 +96,13 @@ public:
     // Parse a .torrent file and hand it to librats. false on parse or add error.
     bool addTorrentFile(const QString& torrentFile, const QString& savePath);
 
-    // --- Metadata fetch (export) --------------------------------------------
+    // --- Metadata fetch -----------------------------------------------------
+    // Parsed metadata delivered without downloading content. The callback may run
+    // on a librats worker thread (or synchronously on the caller thread on the
+    // in-memory fast path), so GUI callers must marshal before touching widgets.
+    using MetadataCallback = std::function<void(const TorrentMetadata& metadata, const QString& error)>;
+    bool fetchMetadata(const QString& hash, MetadataCallback callback, int timeoutMs = 30000);
+
     // Assembled .torrent bytes delivered by fetchTorrentFile. On failure `bytes`
     // is empty and `error` is set; `name` is the metadata name (may be empty).
     // NOTE: invoked on a librats worker thread — marshal before touching Qt UI.

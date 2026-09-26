@@ -5,6 +5,7 @@
 #include "services/filter_policy.h"
 
 #include <QDebug>
+#include <QJsonArray>
 #include <QSet>
 #include <QStringList>
 
@@ -49,6 +50,25 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
             && repository_->updateFiles(existing.hash, torrent.fileList)) {
             existing.fileList = torrent.fileList;
             existing.files = torrent.fileList.size();
+            result.torrent = existing;
+        }
+
+        // A peer may know richer tracker/site metadata than our local copy.
+        // Backfill only missing keys so remote/stale data never clobbers a value
+        // already obtained locally.
+        QJsonObject infoBackfill;
+        for (auto it = torrent.info.constBegin(); it != torrent.info.constEnd(); ++it) {
+            const QJsonValue current = existing.info.value(it.key());
+            const bool missing = current.isUndefined() || current.isNull()
+                || (current.isString() && current.toString().isEmpty())
+                || (current.isArray() && current.toArray().isEmpty())
+                || (current.isObject() && current.toObject().isEmpty());
+            if (missing)
+                infoBackfill.insert(it.key(), it.value());
+        }
+        if (!infoBackfill.isEmpty() && repository_->mergeInfo(existing.hash, infoBackfill)) {
+            for (auto it = infoBackfill.constBegin(); it != infoBackfill.constEnd(); ++it)
+                existing.info.insert(it.key(), it.value());
             result.torrent = existing;
         }
 

@@ -73,10 +73,12 @@ void TrackerSiteScraper::stop()
 void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
 {
     if (stopping_.load()) {
+        emit scrapeFinished(infoHash, false);
         return; // shutting down — accept no new work
     }
 
     if (infoHash.length() != kInfoHashHexLength) {
+        emit scrapeFinished(infoHash, false);
         return;
     }
 
@@ -87,6 +89,7 @@ void TrackerSiteScraper::scrape(const QString& infoHash, const QString& name)
             const QDateTime lastCheck = recentChecks_[infoHash];
             if (lastCheck.secsTo(QDateTime::currentDateTime()) < kCooldownSecs) {
                 qDebug() << "TrackerSiteScraper: Hash" << infoHash.left(8) << "checked recently, skipping";
+                emit scrapeFinished(infoHash, false);
                 return;
             }
         }
@@ -577,10 +580,13 @@ void TrackerSiteScraper::checkAllComplete(const QString& hash)
     }
     processQueue();
 
-    // Only emit when at least one tracker produced data.
-    if (!trackers.isEmpty()) {
+    // Deliver the payload first so a direct-connected service can persist it
+    // before observers see the terminal success signal.
+    const bool found = !trackers.isEmpty();
+    if (found) {
         emit scraped(hash, info);
     }
+    emit scrapeFinished(hash, found);
 }
 
 // ============================================================================
