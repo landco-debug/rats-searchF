@@ -1125,6 +1125,9 @@ void TorrentDetailsPanel::requestTrackerRefresh()
         trackerUrlsLabel_->hide();
         trackerInfoLoadingLabel_->setText(tr("🔍 Searching release descriptions and media details…"));
         trackerInfoLoadingLabel_->show();
+        // The user never has to wait for every source to fail before getting a
+        // way forward: reference searches are available immediately.
+        rebuildMetadataLinks(currentTorrent_.info);
     }
 
     // Rich paths run in parallel. Tracker pages provide the release author's
@@ -1382,10 +1385,14 @@ void TorrentDetailsPanel::showInfoUnavailable(const QString& hash, const QString
     descriptionLabel_->hide();
     descriptionToggle_->hide();
     posterLabel_->hide();
-    trackerLinksWidget_->hide();
 
-    QString text = tr("⚠️ Detailed torrent information is unavailable. Tracker descriptions, connected peers, "
-                      "movie/series metadata services, an exact info-hash index and BitTorrent DHT were checked.");
+    // Requirement: even when no source can return a machine-readable release
+    // card, never leave the user at a dead end. Offer direct exact-hash/title
+    // searches on sites that expose human release descriptions.
+    rebuildMetadataLinks(currentTorrent_.info);
+
+    QString text = tr("⚠️ Detailed torrent information is unavailable from automatic sources. "
+                      "Use one of the links below to open a site with a release description.");
     if (!reason.isEmpty())
         text += QStringLiteral("\n") + reason;
     trackerInfoLoadingLabel_->setText(text);
