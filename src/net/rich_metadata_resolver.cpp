@@ -401,6 +401,15 @@ void RichMetadataResolver::requestRutorMirror(const QString& hash, const QString
             if (!bestUrl.isEmpty() && bestScore >= 260) {
                 qInfo() << "RichMetadataResolver: release mirror candidate" << bestTitle.left(80)
                         << "score" << bestScore;
+
+                QJsonObject reference;
+                reference[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("Rutor release match"));
+                reference[QStringLiteral("rutorUrl")] = bestUrl;
+                reference[QStringLiteral("releaseReferenceUrl")] = bestUrl;
+                reference[QStringLiteral("releaseReferenceTitle")] = bestTitle;
+                reference[QStringLiteral("releaseMatchMethod")] = QStringLiteral("release fingerprint + total size");
+                emit metadataFound(hash, reference);
+
                 requestRutorDetail(hash, bestUrl, bestTitle, torrentName, totalSize, bestSize);
                 return;
             }
