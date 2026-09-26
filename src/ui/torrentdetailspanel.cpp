@@ -20,7 +20,9 @@
 #include <QFont>
 #include <QFrame>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPixmap>
 #include <QPointer>
 #include <QScrollArea>
@@ -461,6 +463,7 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
     infoResolved_ = hasUsefulTrackerInfo(torrent.info);
     trackerLookupFinished_ = false;
     peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
     dhtFallbackRequested_ = false;
     lastInfoError_.clear();
 
@@ -584,6 +587,7 @@ void TorrentDetailsPanel::clear()
     infoResolved_ = false;
     trackerLookupFinished_ = false;
     peerFallbackRequested_ = false;
+    publicIndexFallbackRequested_ = false;
     dhtFallbackRequested_ = false;
     lastInfoError_.clear();
 
@@ -909,9 +913,16 @@ void TorrentDetailsPanel::requestTrackerRefresh()
             requestPeerInfoFallback(hash);
     });
 
-    // Stage 3 starts even if a peer never answers (the legacy wire protocol has
-    // no explicit "not found" reply). This fetches only metadata, never content.
-    QTimer::singleShot(4500, this, [this, hash]() {
+    // Stage 3: query a public hash index. Unlike title search this is exact —
+    // the 40-char info hash is the identity, so there is no fuzzy-match risk.
+    QTimer::singleShot(2500, this, [this, hash]() {
+        if (hash == currentHash_ && !infoResolved_)
+            requestPublicIndexFallback(hash);
+    });
+
+    // Stage 4 starts even if a peer or public service never answers. This fetches
+    // only BitTorrent metadata (BEP 9), never the torrent's content.
+    QTimer::singleShot(5000, this, [this, hash]() {
         if (hash == currentHash_ && !infoResolved_)
             requestDhtMetadataFallback(hash);
     });
@@ -935,8 +946,107 @@ void TorrentDetailsPanel::requestPeerInfoFallback(const QString& hash)
     const int sent = app_->peerApi() ? app_->peerApi()->requestTorrentFromPeers(hash, false) : 0;
     if (sent == 0) {
         lastInfoError_ = tr("No connected peer could be queried.");
-        requestDhtMetadataFallback(hash);
+        requestPublicIndexFallback(hash);
     }
+}
+
+void TorrentDetailsPanel::requestPublicIndexFallback(const QString& hash)
+{
+    if (!app_ || hash != currentHash_ || infoResolved_ || publicIndexFallbackRequested_)
+        return;
+    publicIndexFallbackRequested_ = true;
+
+    trackerInfoLoadingLabel_->setText(tr("🌐 Looking up the info hash in a public torrent index…"));
+    trackerInfoLoadingLabel_->show();
+
+    // Magnetz exposes an unauthenticated exact-infohash endpoint. It is only a
+    // fallback: failure never blocks the fully decentralized DHT/BEP 9 path.
+    QUrl url(QStringLiteral("https://magnetz.eu/api/magnets/infohash/%1").arg(hash));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("RatsSearch/2"));
+    request.setTransferTimeout(8000);
+
+    QNetworkReply* reply = posterNetworkManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
+        const auto cleanup = qScopeGuard([reply]() { reply->deleteLater(); });
+        if (hash != currentHash_ || infoResolved_)
+            return;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            lastInfoError_ = tr("Public index lookup failed: %1").arg(reply->errorString());
+            requestDhtMetadataFallback(hash);
+            return;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
+        const QJsonObject data = document.object().value(QStringLiteral("data")).toObject();
+        const QString returnedHash = data.value(QStringLiteral("info_hash")).toString();
+
+        if (parseError.error != QJsonParseError::NoError || data.isEmpty()
+            || returnedHash.compare(hash, Qt::CaseInsensitive) != 0) {
+            lastInfoError_ = tr("Public index returned no matching torrent.");
+            requestDhtMetadataFallback(hash);
+            return;
+        }
+
+        QJsonObject info;
+        info["metadataSource"] = QStringLiteral("Magnetz public index");
+        const QString webUrl = data.value(QStringLiteral("web_url")).toString();
+        if (!webUrl.isEmpty())
+            info["magnetzUrl"] = webUrl;
+
+        const QString creator = data.value(QStringLiteral("creator")).toString();
+        if (!creator.isEmpty())
+            info["createdBy"] = creator;
+
+        const QString created = data.value(QStringLiteral("creation_date")).toString();
+        const QDateTime createdAt = QDateTime::fromString(created, Qt::ISODate);
+        if (createdAt.isValid())
+            info["creationDate"] = createdAt.toSecsSinceEpoch();
+
+        if (data.contains(QStringLiteral("is_private")))
+            info["private"] = data.value(QStringLiteral("is_private")).toBool();
+        if (data.contains(QStringLiteral("is_verified")))
+            info["verified"] = data.value(QStringLiteral("is_verified")).toBool();
+        if (data.contains(QStringLiteral("is_active")))
+            info["active"] = data.value(QStringLiteral("is_active")).toBool();
+
+        const QJsonObject release = data.value(QStringLiteral("release")).toObject();
+        QStringList releaseBits;
+        for (const char* key : { "type", "resolution", "format" }) {
+            const QString value = release.value(QLatin1String(key)).toString();
+            if (!value.isEmpty())
+                releaseBits.append(value);
+        }
+        if (!releaseBits.isEmpty())
+            info["metadataNote"] = tr("Release: %1").arg(releaseBits.join(QStringLiteral(" · ")));
+
+        const QJsonArray trackers = data.value(QStringLiteral("trackers")).toArray();
+        if (!trackers.isEmpty())
+            info["trackerUrls"] = trackers;
+
+        QVector<rats::domain::File> files;
+        const QJsonArray fileArray = data.value(QStringLiteral("files")).toArray();
+        files.reserve(fileArray.size());
+        for (const QJsonValue& value : fileArray) {
+            const QJsonObject file = value.toObject();
+            const QString path = file.value(QStringLiteral("path")).toString();
+            const qint64 size = file.value(QStringLiteral("size")).toVariant().toLongLong();
+            if (!path.isEmpty())
+                files.append(rats::domain::File { path, size });
+        }
+
+        if (app_ && app_->torrents()) {
+            if (!files.isEmpty())
+                app_->torrents()->updateFiles(hash, files);
+            app_->torrents()->mergeInfo(hash, info);
+        }
+
+        currentTorrent_.info = info;
+        infoResolved_ = true;
+        updateTrackerInfoDisplay(info);
+    });
 }
 
 void TorrentDetailsPanel::requestDhtMetadataFallback(const QString& hash)
@@ -1040,7 +1150,7 @@ void TorrentDetailsPanel::showInfoUnavailable(const QString& hash, const QString
     trackerLinksWidget_->hide();
 
     QString text = tr("⚠️ Extended information is unavailable. Tracker sites, connected Rats Search peers, "
-                      "and BitTorrent DHT metadata were checked.");
+                      "a public info-hash index, and BitTorrent DHT metadata were checked.");
     if (!reason.isEmpty())
         text += QStringLiteral("\n") + reason;
     trackerInfoLoadingLabel_->setText(text);
@@ -1058,6 +1168,7 @@ void TorrentDetailsPanel::onTrackerInfoCheckFinished(const QString& hash, bool f
         return;
 
     requestPeerInfoFallback(hash);
+    requestPublicIndexFallback(hash);
     if (dhtFallbackRequested_ && !lastInfoError_.isEmpty())
         showInfoUnavailable(hash, lastInfoError_);
 }
@@ -1146,6 +1257,10 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         metadataDetails << tr("Created: %1").arg(QDateTime::fromSecsSinceEpoch(creationDate).toString("yyyy-MM-dd"));
     if (info.contains("private"))
         metadataDetails << (info.value("private").toBool() ? tr("Private torrent") : tr("Public torrent"));
+    if (info.contains("verified"))
+        metadataDetails << (info.value("verified").toBool() ? tr("Verified by public index") : tr("Not verified by public index"));
+    if (info.contains("active") && !info.value("active").toBool())
+        metadataDetails << tr("Marked inactive by public index");
     if (!metadataDetails.isEmpty()) {
         if (!description.isEmpty())
             description += QStringLiteral("\n\n");
@@ -1206,6 +1321,20 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
             QDesktopServices::openUrl(QUrl(QString("https://nyaa.si/view/%1").arg(nyaaThreadId)));
         });
         trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, nyaaBtn);
+        hasLinks = true;
+    }
+
+    // Public-index link (exact hash lookup fallback).
+    const QString magnetzUrl = info.value("magnetzUrl").toString();
+    if (!magnetzUrl.isEmpty()) {
+        QPushButton* magnetzBtn = new QPushButton(tr("🔗 Magnetz"));
+        magnetzBtn->setObjectName("trackerLinkButton");
+        magnetzBtn->setCursor(Qt::PointingHandCursor);
+        magnetzBtn->setToolTip(magnetzUrl);
+        connect(magnetzBtn, &QPushButton::clicked, this, [magnetzUrl]() {
+            QDesktopServices::openUrl(QUrl(magnetzUrl));
+        });
+        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, magnetzBtn);
         hasLinks = true;
     }
 
