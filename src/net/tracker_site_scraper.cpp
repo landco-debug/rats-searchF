@@ -540,7 +540,7 @@ void TrackerSiteScraper::scrape1337x(const QString& hash)
         const QString relative = match.captured(1);
         const QString href = QStringLiteral("https://1337x.to") + relative;
 
-        QNetworkRequest detailRequest(QUrl(href));
+        QNetworkRequest detailRequest { QUrl(href) };
         detailRequest.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
         detailRequest.setRawHeader("Accept", "text/html,application/xhtml+xml");
         detailRequest.setTransferTimeout(kTimeoutMs);
