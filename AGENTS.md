@@ -90,3 +90,27 @@ Still intentionally not implemented:
 
 Next stage:
 - replace only the Search tab orchestration with strict Rutor results, while leaving torrent download/P2P infrastructure intact.
+
+
+### Stage 4 — protect verified provenance during persistence
+
+Commit message: `fix: keep exact source metadata authoritative`.
+
+Why this stage was inserted before the GUI switch:
+- the existing duplicate-hash merge only filled missing `Torrent::info` keys;
+- therefore an old guessed `description` or tracker link could survive even after Rutor proved the exact release;
+- newly indexed torrents also triggered the legacy tracker-site resolver immediately.
+
+Implemented:
+- verified source metadata (`sourceVerified=true` + concrete `sourceUrl`) replaces the old info object on duplicate hash instead of merely backfilling it;
+- ordinary P2P/import metadata keeps the old conservative missing-key-only merge behavior;
+- `TrackerService::onTorrentIndexed()` still refreshes swarm counts but skips legacy site-info guessing for an already verified source result;
+- live-Manticore integration test proves that stale guessed description/source keys are removed when exact Rutor provenance arrives.
+
+Stage 3 verification before starting this stage:
+- macOS ARM (Apple Silicon): Build success, Run tests success;
+- Linux x64: Build success, Run tests success.
+
+Next stage:
+- switch only the Search tab to `RutorSearchClient` results and persist accepted releases through `IndexingService`;
+- do not mix local/P2P/DHT-only rows into that search result set.
