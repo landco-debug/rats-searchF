@@ -118,7 +118,7 @@ endif()
 # Custom target to run all tests
 add_custom_target(check
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_domain test_query test_infohash test_update_service
+    DEPENDS test_domain test_query test_infohash test_media_metadata test_update_service
             test_config_store test_filter_policy test_content_classifier test_manticore_queries
             test_manticore_maintenance
             test_database_dump
