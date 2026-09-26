@@ -38,6 +38,7 @@ signals:
 
 private:
     void requestYts(const QString& hash, const QString& torrentName);
+    void requestWikipedia(const QString& hash, const QString& torrentName);
     void requestCinemeta(const QString& hash, const QString& torrentName, rats::domain::ContentCategory category);
     void requestCinemetaCatalog(
         const QString& hash, const QString& torrentName, const QString& type, bool tryOtherTypeOnFailure);
