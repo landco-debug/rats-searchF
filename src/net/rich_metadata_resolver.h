@@ -41,6 +41,8 @@ signals:
 private:
     void requestYts(const QString& hash, const QString& torrentName);
     void requestWikipedia(const QString& hash, const QString& torrentName);
+    void requestExtReleaseMatch(
+        const QString& hash, const QString& torrentName, qint64 totalSize, const QVector<rats::domain::File>& files);
     void requestOxTorrentReleaseMatch(
         const QString& hash, const QString& torrentName, qint64 totalSize, const QVector<rats::domain::File>& files);
     void requestOxTorrentDetail(const QString& hash, const QString& candidateUrl, const QString& candidateTitle,
