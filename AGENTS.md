@@ -37,3 +37,32 @@ Not implemented yet:
 
 Next stage:
 - add a small asynchronous live Rutor fetcher around this tested parsing core, still without changing the existing GUI search path.
+
+
+### Stage 2 — asynchronous live Rutor transport
+
+Commit message: `feat: add asynchronous strict Rutor search client`.
+
+Stage 1 verification before starting this stage:
+- macOS ARM (Apple Silicon): Build success, Run tests success;
+- Linux x64: Build success, Run tests success;
+- Windows x64: Build success, Run tests success;
+- draft CI PR: #6.
+
+Implemented:
+- new `src/net/rutor_search_client.{h,cpp}`;
+- asynchronous search-page HTTP request using the exact Rutor title-search URL;
+- fallback from `rutor.info` to `rutor.is` when the primary request fails or is unusable;
+- bounded detail-page concurrency (4 simultaneous requests);
+- each candidate keeps its exact `/torrent/<id>` provenance while queued;
+- detail result is emitted only after the Stage 1 parser verifies the same info-hash and strict completeness;
+- cancellation/generation guard prevents stale responses from an older query leaking into a newer query;
+- detail-page mirror retry is used only for network failure, not to weaken identity/completeness checks.
+
+Still intentionally not implemented:
+- no `Application` ownership/wiring yet;
+- no replacement of the GUI's existing local/P2P/DHT search yet;
+- no user-visible behavior change in this stage.
+
+Next stage:
+- wire one `RutorSearchClient` into `Application` and expose it through an accessor, without changing the search UI yet.
