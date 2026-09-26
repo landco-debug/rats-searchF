@@ -1,4 +1,5 @@
 #include "net/tracker_site_scraper.h"
+#include "net/media_metadata_utils.h"
 
 #include <QDebug>
 #include <QJsonArray>
@@ -6,6 +7,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSet>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 
@@ -23,6 +26,8 @@ constexpr const char* kUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ap
 const QVector<TrackerSiteScraper::Strategy> TrackerSiteScraper::kStrategies = {
     &TrackerSiteScraper::scrapeRutracker,
     &TrackerSiteScraper::scrapeNyaa,
+    &TrackerSiteScraper::scrape1337x,
+    &TrackerSiteScraper::scrapeRutor,
 };
 
 // ============================================================================
@@ -158,6 +163,13 @@ void TrackerSiteScraper::processQueue()
     if (pendingQueue_.isEmpty() && queueTimer_) {
         queueTimer_->stop();
     }
+}
+
+QString TrackerSiteScraper::pendingNameForHash(const QString& hash) const
+{
+    QMutexLocker locker(&pendingMutex_);
+    const auto it = pendingScrapes_.constFind(hash);
+    return it == pendingScrapes_.constEnd() ? QString() : it->name;
 }
 
 // ============================================================================
