@@ -64,6 +64,7 @@ private slots:
     void onFavoriteClicked();
     // Repository signalled that this torrent's row changed (tracker counts/info).
     void onTorrentUpdated(const QString& hash);
+    void onTrackerInfoAvailable(const QString& hash, const QJsonObject& info);
     void onTrackerInfoCheckFinished(const QString& hash, bool found);
     void onRemoteTorrentReceived(const QString& hash, const QJsonObject& data);
 
