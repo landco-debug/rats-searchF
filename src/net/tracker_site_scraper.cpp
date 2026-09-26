@@ -718,7 +718,7 @@ void TrackerSiteScraper::scrapeRutorCandidate(const QString& hash, const QString
     }
 
     const QString href = candidateUrls.at(index);
-    QNetworkRequest request(QUrl(href));
+    QNetworkRequest request { QUrl(href) };
     request.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
     request.setRawHeader("Accept", "text/html,application/xhtml+xml");
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
