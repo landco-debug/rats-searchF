@@ -686,11 +686,43 @@ void TrackerSiteScraper::scrapeRutor(const QString& hash)
 
         QStringList candidates;
         QSet<QString> seen;
+
+        // Search-result rows normally expose both the detail-page link and a
+        // magnet. Match the info hash right here when possible; this avoids
+        // probing a handful of same-title releases and dramatically improves
+        // coverage for films with many encodes.
+        const QRegularExpression rowRe(
+            QStringLiteral(R"re(<tr[^>]*>(.*?)</tr>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator rowIt = rowRe.globalMatch(html);
+        while (rowIt.hasNext()) {
+            const QString row = rowIt.next().captured(1);
+            const QRegularExpression hashRe(
+                QStringLiteral(R"(magnet:[^"'<>]*?xt=urn:btih:([A-Fa-f0-9]{40}))"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch hashMatch = hashRe.match(row);
+            if (!hashMatch.hasMatch() || hashMatch.captured(1).compare(hash, Qt::CaseInsensitive) != 0)
+                continue;
+
+            const QRegularExpression linkRe(
+                QStringLiteral(R"re(href\s*=\s*["'](/torrent/(\d+)(?:/[^"']*)?)["'])re"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch linkMatch = linkRe.match(row);
+            if (linkMatch.hasMatch()) {
+                const QString exactUrl = QStringLiteral("https://rutor.info") + linkMatch.captured(1);
+                scrapeRutorCandidate(hash, QStringList { exactUrl }, 0);
+                return;
+            }
+        }
+
+        // Some mirrors/search layouts omit the magnet from the listing. Fall
+        // back to checking a broader candidate set by opening detail pages and
+        // verifying their magnet hashes one by one.
         QRegularExpression linkRe(
             QStringLiteral(R"re(href\s*=\s*["'](/torrent/(\d+)(?:/[^"']*)?)["'])re"),
             QRegularExpression::CaseInsensitiveOption);
         QRegularExpressionMatchIterator it = linkRe.globalMatch(html);
-        while (it.hasNext() && candidates.size() < 8) {
+        while (it.hasNext() && candidates.size() < 20) {
             const QString relative = it.next().captured(1);
             const QString absolute = QStringLiteral("https://rutor.info") + relative;
             if (!seen.contains(absolute)) {
