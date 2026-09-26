@@ -7,6 +7,8 @@
 #include "domain/content.h"
 #include "domain/torrent_codec.h"
 #include "net/torrent_engine.h"
+#include "net/media_metadata_utils.h"
+#include "net/rich_metadata_resolver.h"
 #include "peer/peer_api.h"
 #include "services/download_service.h"
 #include "services/tracker_service.h"
@@ -36,6 +38,11 @@ using rats::domain::ContentType;
 TorrentDetailsPanel::TorrentDetailsPanel(QWidget* parent) : QWidget(parent)
 {
     setupUi();
+
+    richMetadataResolver_ = new rats::net::RichMetadataResolver(this);
+    connect(richMetadataResolver_, &rats::net::RichMetadataResolver::metadataFound, this,
+        &TorrentDetailsPanel::onRichMetadataFound);
+
     clear();
 }
 
@@ -198,7 +205,7 @@ void TorrentDetailsPanel::setupUi()
     sepTracker->setFixedHeight(1);
     trackerInfoLayout->addWidget(sepTracker);
 
-    QLabel* trackerInfoTitle = new QLabel(tr("Torrent Info"));
+    QLabel* trackerInfoTitle = new QLabel(tr("Media / Release Info"));
     trackerInfoTitle->setObjectName("sectionTitle");
     trackerInfoLayout->addWidget(trackerInfoTitle);
 
@@ -214,6 +221,14 @@ void TorrentDetailsPanel::setupUi()
     trackerInfoSourceLabel_->setWordWrap(true);
     trackerInfoSourceLabel_->hide();
     trackerInfoLayout->addWidget(trackerInfoSourceLabel_);
+
+    technicalInfoLabel_ = new QLabel();
+    technicalInfoLabel_->setObjectName("descriptionLabel");
+    technicalInfoLabel_->setWordWrap(true);
+    technicalInfoLabel_->setTextFormat(Qt::PlainText);
+    technicalInfoLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    technicalInfoLabel_->hide();
+    trackerInfoLayout->addWidget(technicalInfoLabel_);
 
     trackerUrlsLabel_ = new QLabel();
     trackerUrlsLabel_->setObjectName("hintLabel");
@@ -462,8 +477,9 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
 {
     currentTorrent_ = torrent;
     currentHash_ = torrent.hash;
-    infoResolved_ = hasUsefulTrackerInfo(torrent.info);
+    infoResolved_ = hasUserFacingInfo(torrent.info);
     trackerLookupFinished_ = false;
+    richMetadataRequested_ = false;
     peerFallbackRequested_ = false;
     publicIndexFallbackRequested_ = false;
     dhtFallbackRequested_ = false;
@@ -522,14 +538,16 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
         resetDownloadState();
     }
 
-    // Show existing extended info from any source (tracker websites, peers or
-    // raw BitTorrent metadata) when available.
-    if (infoResolved_) {
+    // Show cached human-facing metadata immediately. Low-level tracker URLs or
+    // DHT bookkeeping alone are intentionally not treated as "information about
+    // the movie/release".
+    if (hasUserFacingInfo(torrent.info)) {
         updateTrackerInfoDisplay(torrent.info);
     } else {
         trackerInfoWidget_->hide();
         trackerInfoLoadingLabel_->hide();
         trackerInfoSourceLabel_->hide();
+        technicalInfoLabel_->hide();
         trackerUrlsLabel_->hide();
         retryInfoButton_->hide();
         posterLabel_->hide();
@@ -581,6 +599,8 @@ void TorrentDetailsPanel::clear()
     trackerInfoLoadingLabel_->hide();
     trackerInfoSourceLabel_->hide();
     trackerInfoSourceLabel_->clear();
+    technicalInfoLabel_->hide();
+    technicalInfoLabel_->clear();
     trackerUrlsLabel_->hide();
     trackerUrlsLabel_->clear();
     retryInfoButton_->hide();
@@ -588,6 +608,7 @@ void TorrentDetailsPanel::clear()
     descriptionExpanded_ = false;
     infoResolved_ = false;
     trackerLookupFinished_ = false;
+    richMetadataRequested_ = false;
     peerFallbackRequested_ = false;
     publicIndexFallbackRequested_ = false;
     dhtFallbackRequested_ = false;
