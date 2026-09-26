@@ -1652,7 +1652,15 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
     QStringList sections;
     const QString releaseDetails = info.value(QStringLiteral("releaseDetails")).toString().trimmed();
     const QString trackerDescription = info.value(QStringLiteral("description")).toString().trimmed();
-    const QString synopsis = info.value(QStringLiteral("synopsis")).toString().trimmed();
+    QString synopsis = info.value(QStringLiteral("synopsis")).toString().trimmed();
+    // Hide stale/ambiguous encyclopedia disambiguation text left by older
+    // builds. It is movie-title metadata, not information about this release.
+    if (synopsis.contains(QStringLiteral("may also refer to"), Qt::CaseInsensitive)
+        || synopsis.contains(QStringLiteral("disambiguation"), Qt::CaseInsensitive)
+        || synopsis.contains(QStringLiteral("может означать"), Qt::CaseInsensitive)
+        || synopsis.contains(QStringLiteral("значения"), Qt::CaseInsensitive)) {
+        synopsis.clear();
+    }
 
     if (!releaseDetails.isEmpty())
         sections << tr("RELEASE DETAILS\n%1").arg(releaseDetails);
