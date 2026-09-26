@@ -1066,6 +1066,33 @@ void TorrentDetailsPanel::mergeInfoPatch(const QJsonObject& patch, bool persist)
         updateTrackerInfoDisplay(merged);
 }
 
+void TorrentDetailsPanel::enrichFromTorrentIdentity()
+{
+    if (currentHash_.isEmpty())
+        return;
+
+    QString corpus = currentTorrent_.name;
+    for (const rats::domain::File& file : currentTorrent_.fileList) {
+        if (!file.path.trimmed().isEmpty())
+            corpus += QLatin1Char('\n') + file.path;
+    }
+
+    const QJsonObject tech = rats::net::metadata::extractTechnicalInfo(corpus);
+    if (tech.isEmpty())
+        return;
+
+    QJsonObject patch;
+    QJsonArray sources;
+    sources.append(QStringLiteral("Torrent name/files"));
+    patch[QStringLiteral("metadataSources")] = sources;
+    patch[QStringLiteral("technicalInfo")] = tech;
+
+    // This is exact to the selected torrent, but it is only inference from its
+    // own names. Never manufacture an audio track that the filename did not
+    // actually expose.
+    mergeInfoPatch(patch, false);
+}
+
 void TorrentDetailsPanel::requestRichMetadataEnrichment(const QString& hash)
 {
     if (hash != currentHash_ || richMetadataRequested_ || !richMetadataResolver_)
@@ -1116,12 +1143,12 @@ void TorrentDetailsPanel::requestTrackerRefresh()
     // release/file metadata, but they are deliberately not presented as the
     // primary "torrent information" when richer human-readable sources exist.
     QTimer::singleShot(3500, this, [this, hash]() {
-        if (hash == currentHash_ && !hasUserFacingInfo(currentTorrent_.info))
+        if (hash == currentHash_ && !hasReleaseSpecificInfo(currentTorrent_.info))
             requestPublicIndexFallback(hash);
     });
 
     QTimer::singleShot(6000, this, [this, hash]() {
-        if (hash == currentHash_ && !hasUserFacingInfo(currentTorrent_.info))
+        if (hash == currentHash_ && !hasReleaseSpecificInfo(currentTorrent_.info))
             requestDhtMetadataFallback(hash);
     });
 
@@ -1243,10 +1270,13 @@ void TorrentDetailsPanel::requestPublicIndexFallback(const QString& hash)
             if (!path.isEmpty())
                 files.append(rats::domain::File { path, size });
         }
+        if (!files.isEmpty())
+            currentTorrent_.fileList = files;
         if (app_ && app_->torrents() && !files.isEmpty())
             app_->torrents()->updateFiles(hash, files);
 
         mergeInfoPatch(info);
+        enrichFromTorrentIdentity();
         if (!hasUserFacingInfo(currentTorrent_.info))
             requestDhtMetadataFallback(hash);
     });
@@ -1311,10 +1341,13 @@ void TorrentDetailsPanel::requestDhtMetadataFallback(const QString& hash)
                     files.reserve(meta.files.size());
                     for (const auto& file : meta.files)
                         files.append(rats::domain::File { file.path, file.size });
+                    if (!files.isEmpty())
+                        self->currentTorrent_.fileList = files;
                     if (self->app_ && self->app_->torrents() && !files.isEmpty())
                         self->app_->torrents()->updateFiles(hash, files);
 
                     self->mergeInfoPatch(info);
+                    self->enrichFromTorrentIdentity();
                 },
                 Qt::QueuedConnection);
         },
@@ -1382,7 +1415,7 @@ void TorrentDetailsPanel::onTrackerInfoCheckFinished(const QString& hash, bool f
     if (!hasReleaseSpecificInfo(currentTorrent_.info))
         requestPeerInfoFallback(hash);
 
-    if (!hasUserFacingInfo(currentTorrent_.info))
+    if (!hasReleaseSpecificInfo(currentTorrent_.info))
         requestPublicIndexFallback(hash);
 
     Q_UNUSED(found);
