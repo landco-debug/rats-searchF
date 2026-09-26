@@ -1,0 +1,95 @@
+name: Fork macOS ARM Build
+
+on:
+  push:
+    branches:
+      - master
+      - develop
+      - 'fix/**'
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.10.1'
+  BUILD_TYPE: Release
+
+jobs:
+  build-macos-arm:
+    runs-on: macos-latest
+    name: macOS ARM validation
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtwebsockets
+          cache: true
+
+      - name: Install MySQL client
+        run: |
+          brew install mysql-client
+          echo "MYSQL_INCLUDE_DIR=$(brew --prefix mysql-client)/include/mysql" >> $GITHUB_ENV
+          echo "MYSQL_LIB_DIR=$(brew --prefix mysql-client)/lib" >> $GITHUB_ENV
+
+      - name: Build Qt MySQL plugin if needed
+        run: |
+          QT_ROOT="${{ env.QT_ROOT_DIR }}"
+          QT_PLUGIN_DIR="$QT_ROOT/plugins/sqldrivers"
+          PLUGIN_PATH="$QT_PLUGIN_DIR/libqsqlmysql.dylib"
+          if [ ! -f "$PLUGIN_PATH" ]; then
+            git clone --depth 1 --branch v${{ env.QT_VERSION }} https://github.com/qt/qtbase.git qtbase-src
+            cd qtbase-src/src/plugins/sqldrivers
+            cmake -B build -G Ninja               -DCMAKE_BUILD_TYPE=Release               -DCMAKE_OSX_ARCHITECTURES=arm64               -DMySQL_INCLUDE_DIR="$MYSQL_INCLUDE_DIR"               -DMySQL_LIBRARY="$MYSQL_LIB_DIR/libmysqlclient.dylib"
+            if [ -f build/build.ninja ]; then
+              sed -i '' 's/-arch x86_64/-arch arm64/g' build/build.ninja
+            fi
+            cmake --build build --target qsqlmysql --config Release
+            mkdir -p "$QT_PLUGIN_DIR"
+            cp build/plugins/sqldrivers/libqsqlmysql.dylib "$QT_PLUGIN_DIR/"
+          fi
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}             -DRATS_SEARCH_USE_SYSTEM_LIBRATS=OFF             -DRATS_SEARCH_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure --parallel
+
+      - name: Bundle Manticore binaries
+        run: |
+          BUNDLE_DIR="build/bin/RatsSearch.app/Contents/MacOS"
+          cp imports/darwin/arm64/* "$BUNDLE_DIR/" || true
+          chmod +x "$BUNDLE_DIR/searchd" "$BUNDLE_DIR/indexer" 2>/dev/null || true
+
+      - name: Create DMG
+        run: |
+          mkdir -p dmg-contents
+          cp -R build/bin/RatsSearch.app dmg-contents/
+          ln -s /Applications dmg-contents/Applications
+          hdiutil create             -volname "Rats Search Fork"             -srcfolder dmg-contents             -ov             -format UDZO             "RatsSearch-macOS-ARM-fork.dmg"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v5
+        with:
+          name: RatsSearch-macOS-ARM-fork
+          path: RatsSearch-macOS-ARM-fork.dmg
+          retention-days: 14
