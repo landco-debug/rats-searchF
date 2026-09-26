@@ -296,10 +296,11 @@ void RichMetadataResolver::resolve(const QString& infoHash, const QString& torre
     if (hash.size() != 40 || torrentName.trimmed().isEmpty())
         return;
 
-    // The release-mirror lookup is deliberately independent from info-hash:
-    // mirrors often re-create the .torrent and therefore change the hash while
-    // preserving the exact release payload. We match full release fingerprint +
-    // total size, then read that page's human description.
+    // Release resolvers are deliberately independent from info-hash: mirrors
+    // often re-create the .torrent and therefore change the hash while preserving
+    // the exact encode. Match the release fingerprint + total size first.
+    requestExtReleaseMatch(hash, torrentName, totalSize, files);
+    requestOxTorrentReleaseMatch(hash, torrentName, totalSize, files);
     requestRutorReleaseMatch(hash, torrentName, totalSize, files);
 
     // Generic title metadata is supplemental only. It can add synopsis/poster,
@@ -307,6 +308,289 @@ void RichMetadataResolver::resolve(const QString& infoHash, const QString& torre
     requestYts(hash, torrentName);
     requestWikipedia(hash, torrentName);
     requestCinemeta(hash, torrentName, category);
+}
+
+
+void RichMetadataResolver::requestExtReleaseMatch(const QString& hash, const QString& torrentName,
+    qint64 totalSize, const QVector<rats::domain::File>& files)
+{
+    QString query = metadata::cleanMediaTitle(torrentName);
+    const int year = metadata::extractYear(torrentName);
+    if (year > 0)
+        query += QStringLiteral(" ") + QString::number(year);
+    if (query.trimmed().size() < 3)
+        query = torrentName;
+    if (query.trimmed().size() < 3)
+        return;
+
+    QUrl url(QStringLiteral("https://ext.to/browse/"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("q"), query.trimmed());
+    url.setQuery(q);
+
+    QNetworkReply* reply = networkManager_->get(htmlRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, hash, torrentName, totalSize, files]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError)
+                return;
+
+            const QString html = QString::fromUtf8(reply->readAll());
+            if (html.trimmed().isEmpty())
+                return;
+
+            QString bestUrl;
+            QString bestTitle;
+            QString bestSource;
+            qint64 bestSize = 0;
+            int bestScore = -1000;
+
+            const QRegularExpression rowRe(
+                QStringLiteral(R"re(<tr[^>]*>(.*?)</tr>)re"),
+                QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpression torrentLinkRe(
+                QStringLiteral(R"re(<a[^>]+href\s*=\s*["'](/[^"'<>]+-\d+/)["'][^>]*>(.*?)</a>)re"),
+                QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+
+            QRegularExpressionMatchIterator rows = rowRe.globalMatch(html);
+            while (rows.hasNext()) {
+                const QString row = rows.next().captured(1);
+                const QRegularExpressionMatch link = torrentLinkRe.match(row);
+                if (!link.hasMatch())
+                    continue;
+
+                const QString title = stripHtml(link.captured(2)).trimmed();
+                if (title.isEmpty())
+                    continue;
+
+                const qint64 rowSize = parseHumanSize(stripHtml(row));
+                const int score = releaseCandidateScore(
+                    torrentName, files, totalSize, title, rowSize, false);
+                if (score <= bestScore)
+                    continue;
+
+                // If a size is available, a substantially different payload is
+                // not the same release even when the movie/release group matches.
+                if (totalSize > 0 && rowSize > 0) {
+                    const double diff = qAbs(static_cast<double>(rowSize - totalSize))
+                        / static_cast<double>(totalSize);
+                    if (diff > 0.045)
+                        continue;
+                }
+
+                bestScore = score;
+                bestTitle = title;
+                bestSize = rowSize;
+                bestUrl = QStringLiteral("https://ext.to") + link.captured(1);
+
+                const QString rowText = stripHtml(row);
+                static const QRegularExpression sourceRe(
+                    QStringLiteral(R"(\b(?:person|source)\s+([A-Za-z0-9_.-]{2,40})\b)"),
+                    QRegularExpression::CaseInsensitiveOption);
+                const auto sourceMatch = sourceRe.match(rowText);
+                if (sourceMatch.hasMatch())
+                    bestSource = sourceMatch.captured(1);
+            }
+
+            if (bestUrl.isEmpty() || bestScore < 280)
+                return;
+
+            QJsonObject patch;
+            patch[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("EXT exact release"));
+            patch[QStringLiteral("extUrl")] = bestUrl;
+            patch[QStringLiteral("releaseReferenceUrl")] = bestUrl;
+            patch[QStringLiteral("releaseReferenceTitle")] = bestTitle;
+            patch[QStringLiteral("releaseMatchMethod")] = QStringLiteral("exact release fingerprint + total size");
+            if (!bestSource.isEmpty())
+                patch[QStringLiteral("releaseCatalogSource")] = bestSource;
+
+            QJsonObject tech = metadata::extractTechnicalInfo(bestTitle);
+            if (!tech.isEmpty())
+                patch[QStringLiteral("technicalInfo")] = tech;
+
+            QStringList release;
+            release << bestTitle;
+            if (bestSize > 0 && totalSize > 0) {
+                const double pct = qAbs(static_cast<double>(bestSize - totalSize))
+                    / static_cast<double>(totalSize) * 100.0;
+                release << QStringLiteral("Catalog size match: %1% difference").arg(pct, 0, 'f', 2);
+            }
+            if (!bestSource.isEmpty())
+                release << QStringLiteral("Indexed source: ") + bestSource;
+            patch[QStringLiteral("releaseDetails")] = release.join(QLatin1Char('\n'));
+
+            qInfo() << "RichMetadataResolver: EXT exact release match"
+                    << bestTitle.left(100) << "score" << bestScore;
+            emit metadataFound(hash, patch);
+        });
+}
+
+void RichMetadataResolver::requestOxTorrentReleaseMatch(const QString& hash, const QString& torrentName,
+    qint64 totalSize, const QVector<rats::domain::File>& files)
+{
+    QString query = releaseSearchQuery(torrentName, files);
+    if (query.trimmed().size() < 3)
+        return;
+
+    // OxTorrent's current search route is /recherche/<query>. Keep dots/hyphens
+    // in the release name: they are useful fingerprints and the site accepts
+    // percent-encoded path segments.
+    const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query.trimmed()));
+    const QUrl url(QStringLiteral("https://www.oxtorrent.co/recherche/") + encoded);
+
+    QNetworkReply* reply = networkManager_->get(htmlRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, hash, torrentName, totalSize, files]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError)
+                return;
+
+            const QString html = QString::fromUtf8(reply->readAll());
+            if (html.trimmed().isEmpty())
+                return;
+
+            QString bestUrl;
+            QString bestTitle;
+            qint64 bestSize = 0;
+            int bestScore = -1000;
+
+            // Search results contain concrete /torrent/<id>/<slug> links.
+            const QRegularExpression linkRe(
+                QStringLiteral(R"re(<a[^>]+href\s*=\s*["'](/torrent/\d+/[^"']+)["'][^>]*>(.*?)</a>)re"),
+                QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+            QRegularExpressionMatchIterator it = linkRe.globalMatch(html);
+            while (it.hasNext()) {
+                const QRegularExpressionMatch m = it.next();
+                const QString title = stripHtml(m.captured(2)).trimmed();
+                if (title.isEmpty())
+                    continue;
+
+                // Read the local neighbourhood for the result's size. The site
+                // changes wrappers often, but size text stays next to the link.
+                const int start = qMax(0, m.capturedStart(0) - 250);
+                const int length = qMin(1400, html.size() - start);
+                const QString around = stripHtml(html.mid(start, length));
+                const qint64 candidateSize = parseHumanSize(around);
+
+                const int score = releaseCandidateScore(
+                    torrentName, files, totalSize, title, candidateSize, false);
+
+                if (totalSize > 0 && candidateSize > 0) {
+                    const double diff = qAbs(static_cast<double>(candidateSize - totalSize))
+                        / static_cast<double>(totalSize);
+                    if (diff > 0.045)
+                        continue;
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestTitle = title;
+                    bestSize = candidateSize;
+                    bestUrl = QStringLiteral("https://www.oxtorrent.co") + m.captured(1);
+                }
+            }
+
+            if (bestUrl.isEmpty() || bestScore < 280)
+                return;
+
+            qInfo() << "RichMetadataResolver: OxTorrent exact release candidate"
+                    << bestTitle.left(100) << "score" << bestScore;
+
+            // Surface the concrete page only after an actual candidate has been
+            // matched. No generic search button is exposed.
+            QJsonObject reference;
+            reference[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("OxTorrent exact release"));
+            reference[QStringLiteral("oxtorrentUrl")] = bestUrl;
+            reference[QStringLiteral("releaseReferenceUrl")] = bestUrl;
+            reference[QStringLiteral("releaseReferenceTitle")] = bestTitle;
+            reference[QStringLiteral("releaseMatchMethod")] = QStringLiteral("exact release fingerprint + total size");
+            emit metadataFound(hash, reference);
+
+            requestOxTorrentDetail(hash, bestUrl, bestTitle, torrentName, totalSize, bestSize);
+        });
+}
+
+void RichMetadataResolver::requestOxTorrentDetail(const QString& hash, const QString& candidateUrl,
+    const QString& candidateTitle, const QString& torrentName, qint64 totalSize, qint64 candidateSize)
+{
+    QNetworkReply* reply = networkManager_->get(htmlRequest(QUrl(candidateUrl)));
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, hash, candidateUrl, candidateTitle, torrentName, totalSize, candidateSize]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError)
+                return;
+
+            const QString html = QString::fromUtf8(reply->readAll());
+            if (html.trimmed().isEmpty())
+                return;
+
+            const QString plain = stripHtml(html);
+            QString description;
+
+            // On the current OxTorrent template the synopsis is between the
+            // release title and "Informations du fichier". Use the last title
+            // occurrence before the marker to skip breadcrumbs/navigation.
+            int infoPos = plain.indexOf(QStringLiteral("Informations du fichier"), 0, Qt::CaseInsensitive);
+            if (infoPos < 0)
+                infoPos = plain.indexOf(QStringLiteral("Informations fichier"), 0, Qt::CaseInsensitive);
+            if (infoPos > 0) {
+                const int titlePos = plain.lastIndexOf(candidateTitle, infoPos, Qt::CaseInsensitive);
+                if (titlePos >= 0) {
+                    description = plain.mid(titlePos + candidateTitle.size(),
+                        infoPos - (titlePos + candidateTitle.size())).trimmed();
+                }
+            }
+
+            if (description.size() > 12000)
+                description = description.left(12000) + QStringLiteral("…");
+
+            QJsonObject patch;
+            patch[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("OxTorrent exact release"));
+            patch[QStringLiteral("oxtorrentUrl")] = candidateUrl;
+            patch[QStringLiteral("releaseReferenceUrl")] = candidateUrl;
+            patch[QStringLiteral("releaseReferenceTitle")] = candidateTitle;
+            patch[QStringLiteral("releaseMatchMethod")] = QStringLiteral("exact release fingerprint + total size");
+
+            if (description.size() >= 40)
+                patch[QStringLiteral("description")] = description;
+
+            const QJsonObject tech = metadata::extractTechnicalInfo(
+                candidateTitle + QLatin1Char('\n') + description);
+            if (!tech.isEmpty())
+                patch[QStringLiteral("technicalInfo")] = tech;
+
+            QStringList release;
+            release << candidateTitle;
+            if (candidateSize > 0 && totalSize > 0) {
+                const double pct = qAbs(static_cast<double>(candidateSize - totalSize))
+                    / static_cast<double>(totalSize) * 100.0;
+                release << QStringLiteral("Matched size: %1% difference").arg(pct, 0, 'f', 2);
+            }
+            patch[QStringLiteral("releaseDetails")] = release.join(QLatin1Char('\n'));
+
+            // Prefer the page's OpenGraph image; unlike the first <img>, it does
+            // not accidentally pick the site logo.
+            const QRegularExpression ogImageRe(
+                QStringLiteral(R"re(<meta[^>]+(?:property|name)\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["'][^>]*>)re"),
+                QRegularExpression::CaseInsensitiveOption);
+            auto imageMatch = ogImageRe.match(html);
+            if (!imageMatch.hasMatch()) {
+                const QRegularExpression reversedOgImageRe(
+                    QStringLiteral(R"re(<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["']og:image["'][^>]*>)re"),
+                    QRegularExpression::CaseInsensitiveOption);
+                imageMatch = reversedOgImageRe.match(html);
+            }
+            if (imageMatch.hasMatch()) {
+                const QString poster = imageMatch.captured(1).trimmed();
+                if (poster.startsWith(QStringLiteral("http")))
+                    patch[QStringLiteral("poster")] = poster;
+            }
+
+            qInfo() << "RichMetadataResolver: OxTorrent release detail parsed for"
+                    << hash.left(12) << candidateTitle.left(100);
+            emit metadataFound(hash, patch);
+            Q_UNUSED(torrentName);
+        });
 }
 
 void RichMetadataResolver::requestRutorReleaseMatch(const QString& hash, const QString& torrentName,
