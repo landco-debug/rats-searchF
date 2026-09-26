@@ -423,6 +423,7 @@ jobs:
             cmake -B build -G "Ninja" \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
               -DMySQL_INCLUDE_DIR="$MYSQL_INCLUDE_DIR" \
               -DMySQL_LIBRARY="$MYSQL_LIB_DIR/libmysqlclient.dylib"
             
@@ -451,11 +452,34 @@ jobs:
         run: |
           cmake -B build -G "Ninja" \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DRATS_SEARCH_USE_SYSTEM_LIBRATS=OFF \
             -DRATS_SEARCH_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Validate macOS compatibility metadata
+        run: |
+          APP="build/bin/RatsSearch.app"
+          BIN="$APP/Contents/MacOS/RatsSearch"
+          echo "Runner OS: $(sw_vers -productVersion)"
+          echo "Runner arch: $(uname -m)"
+          file "$BIN"
+          echo "Info.plist minimum system version:"
+          /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
+          echo "Mach-O build version:"
+          otool -l "$BIN" | awk '/LC_BUILD_VERSION/{show=1;count=0} show{print;count++} count==6{show=0}'
+          MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist")
+          if [[ "$MIN_OS" != "13.0" && "$MIN_OS" != "13" ]]; then
+            echo "Unexpected LSMinimumSystemVersion: $MIN_OS"
+            exit 1
+          fi
+          if ! file "$BIN" | grep -q "arm64"; then
+            echo "Main executable is not arm64"
+            exit 1
+          fi
 
       - name: Run tests
         run: |
