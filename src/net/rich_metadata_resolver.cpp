@@ -111,9 +111,97 @@ void RichMetadataResolver::resolve(
         return;
 
     // Independent paths: an outage or a poor catalog match in one must not stop
-    // the others.
+    // the others. Wikipedia is deliberately generic (movie/series level), while
+    // YTS/Torrentio/tracker pages can contribute release-specific data.
     requestYts(hash, torrentName);
+    requestWikipedia(hash, torrentName);
     requestCinemeta(hash, torrentName, category);
+}
+
+void RichMetadataResolver::requestWikipedia(const QString& hash, const QString& torrentName)
+{
+    QString title = metadata::cleanMediaTitle(torrentName);
+    if (title.isEmpty())
+        return;
+
+    const int year = metadata::extractYear(torrentName);
+    QString query = title;
+    if (year > 0)
+        query += QStringLiteral(" ") + QString::number(year);
+
+    const bool hasCyrillic = title.contains(QRegularExpression(QStringLiteral("[\\x{0400}-\\x{04FF}]")));
+    const QString host = hasCyrillic ? QStringLiteral("ru.wikipedia.org") : QStringLiteral("en.wikipedia.org");
+
+    QUrl url(QStringLiteral("https://%1/w/api.php").arg(host));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("action"), QStringLiteral("query"));
+    q.addQueryItem(QStringLiteral("generator"), QStringLiteral("search"));
+    q.addQueryItem(QStringLiteral("gsrsearch"), query);
+    q.addQueryItem(QStringLiteral("gsrlimit"), QStringLiteral("5"));
+    q.addQueryItem(QStringLiteral("prop"), QStringLiteral("extracts|pageimages|info"));
+    q.addQueryItem(QStringLiteral("exintro"), QStringLiteral("1"));
+    q.addQueryItem(QStringLiteral("explaintext"), QStringLiteral("1"));
+    q.addQueryItem(QStringLiteral("piprop"), QStringLiteral("original"));
+    q.addQueryItem(QStringLiteral("inprop"), QStringLiteral("url"));
+    q.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
+    q.addQueryItem(QStringLiteral("formatversion"), QStringLiteral("2"));
+    url.setQuery(q);
+
+    QNetworkReply* reply = networkManager_->get(metadataRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash, torrentName]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &error);
+        if (error.error != QJsonParseError::NoError)
+            return;
+
+        const QJsonArray pages
+            = document.object().value(QStringLiteral("query")).toObject().value(QStringLiteral("pages")).toArray();
+
+        int bestScore = -1000;
+        QJsonObject best;
+        for (const QJsonValue& value : pages) {
+            const QJsonObject page = value.toObject();
+            QJsonObject candidate;
+            candidate[QStringLiteral("name")] = page.value(QStringLiteral("title")).toString();
+
+            const QString extract = page.value(QStringLiteral("extract")).toString();
+            const int year = metadata::extractYear(page.value(QStringLiteral("title")).toString() + QLatin1Char(' ') + extract);
+            if (year > 0)
+                candidate[QStringLiteral("year")] = year;
+
+            const int score = candidateScore(torrentName, candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                best = page;
+            }
+        }
+
+        if (best.isEmpty() || bestScore < 55)
+            return;
+
+        const QString extract = best.value(QStringLiteral("extract")).toString().trimmed();
+        const QString fullUrl = best.value(QStringLiteral("fullurl")).toString().trimmed();
+        const QString poster
+            = best.value(QStringLiteral("original")).toObject().value(QStringLiteral("source")).toString().trimmed();
+
+        QJsonObject patch;
+        patch[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("Wikipedia"));
+        if (!extract.isEmpty())
+            patch[QStringLiteral("synopsis")] = extract;
+        if (!poster.isEmpty())
+            patch[QStringLiteral("poster")] = poster;
+        if (!fullUrl.isEmpty())
+            patch[QStringLiteral("wikipediaUrl")] = fullUrl;
+
+        if (!patch.isEmpty()) {
+            qInfo() << "RichMetadataResolver: Wikipedia fallback for" << hash.left(12);
+            emit metadataFound(hash, patch);
+        }
+    });
 }
 
 void RichMetadataResolver::requestYts(const QString& hash, const QString& torrentName)
