@@ -871,6 +871,17 @@ void TorrentDetailsPanel::requestTrackerRefresh()
     if (hasUsefulTrackerInfo(currentTorrent_.info)) {
         infoResolved_ = true;
         updateTrackerInfoDisplay(currentTorrent_.info);
+
+        // A DHT/peer fallback is useful enough to display immediately, but a
+        // later tracker-site hit may still add a poster, description or direct
+        // tracker-page link. Keep enriching those fallback-only records in the
+        // background without putting the UI back into a loading state.
+        const bool fallbackOnly = !currentTorrent_.info.value("metadataSource").toString().isEmpty()
+            && currentTorrent_.info.value("trackers").toArray().isEmpty()
+            && currentTorrent_.info.value("rutrackerThreadId").toInt() <= 0
+            && currentTorrent_.info.value("nyaaThreadId").toInt() <= 0;
+        if (fallbackOnly)
+            trackers->checkInfo(currentHash_, currentTorrent_.name);
         return;
     }
 
@@ -992,7 +1003,7 @@ void TorrentDetailsPanel::requestDhtMetadataFallback(const QString& hash)
                     QVector<rats::domain::File> files;
                     files.reserve(meta.files.size());
                     for (const auto& file : meta.files)
-                        files.append({ file.path, file.size });
+                        files.append(rats::domain::File { file.path, file.size });
 
                     if (self->app_ && self->app_->torrents()) {
                         if (!files.isEmpty())
