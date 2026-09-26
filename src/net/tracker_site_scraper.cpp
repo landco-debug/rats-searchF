@@ -852,81 +852,107 @@ void TrackerSiteScraper::checkAllComplete(const QString& hash)
 {
     QMutexLocker locker(&pendingMutex_);
     auto it = pendingScrapes_.find(hash);
-    if (it == pendingScrapes_.end()) {
+    if (it == pendingScrapes_.end())
         return;
-    }
 
-    if (it->pendingCount > 0) {
-        return; // still waiting for some strategies
-    }
+    if (it->pendingCount > 0)
+        return;
 
-    // All strategies complete — fold the results into a single JSON object. Only
-    // the freshly scraped keys are emitted; the listener merges them into the
-    // stored torrent.
     QJsonObject info;
-    QJsonArray trackers;
+    QJsonArray sources;
+    QJsonObject sourceDescriptions;
+    QJsonObject technicalInfo;
+    int bestDescriptionScore = -1;
+    QString bestDescription;
 
     for (const TrackerSiteInfo& result : it->results) {
-        // Add tracker to the list (deduplicated).
-        bool alreadyListed = false;
-        for (const QJsonValue& t : trackers) {
-            if (t.toString() == result.trackerName) {
-                alreadyListed = true;
+        bool listed = false;
+        for (const QJsonValue& value : sources) {
+            if (value.toString().compare(result.trackerName, Qt::CaseInsensitive) == 0) {
+                listed = true;
                 break;
             }
         }
-        if (!alreadyListed) {
-            trackers.append(result.trackerName);
+        if (!listed)
+            sources.append(result.trackerName);
+
+        if (info.value(QStringLiteral("poster")).toString().isEmpty() && !result.poster.isEmpty())
+            info[QStringLiteral("poster")] = result.poster;
+
+        if (info.value(QStringLiteral("contentCategory")).toString().isEmpty() && !result.contentCategory.isEmpty())
+            info[QStringLiteral("contentCategory")] = result.contentCategory;
+
+        if (info.value(QStringLiteral("trackerName")).toString().isEmpty() && !result.name.isEmpty())
+            info[QStringLiteral("trackerName")] = result.name;
+
+        if (!result.description.isEmpty()) {
+            sourceDescriptions[result.trackerName] = result.description;
+            const int score = metadata::descriptionRichness(result.description);
+            if (score > bestDescriptionScore) {
+                bestDescriptionScore = score;
+                bestDescription = result.description;
+            }
+
+            technicalInfo = metadata::mergeTechnicalInfo(
+                technicalInfo, metadata::extractTechnicalInfo(result.name + QLatin1Char('\n') + result.description));
+        } else if (!result.name.isEmpty()) {
+            technicalInfo
+                = metadata::mergeTechnicalInfo(technicalInfo, metadata::extractTechnicalInfo(result.name));
         }
 
-        // Merge shared fields — first found wins for poster / description.
-        if (info["poster"].toString().isEmpty() && !result.poster.isEmpty()) {
-            info["poster"] = result.poster;
-        }
-        if (info["description"].toString().isEmpty() && !result.description.isEmpty()) {
-            info["description"] = result.description;
-        }
-
-        // Tracker-specific payloads.
-        if (result.trackerName == "rutracker") {
-            if (result.threadId > 0) {
-                info["rutrackerThreadId"] = result.threadId;
-            }
-            if (!result.contentCategory.isEmpty()) {
-                info["contentCategory"] = result.contentCategory;
-            }
-            if (!result.name.isEmpty() && !info.contains("trackerName")) {
-                info["trackerName"] = result.name;
-            }
-        } else if (result.trackerName == "nyaa") {
-            if (result.threadId > 0) {
-                info["nyaaThreadId"] = result.threadId;
-            }
+        if (result.trackerName == QStringLiteral("rutracker")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("rutrackerThreadId")] = result.threadId;
+        } else if (result.trackerName == QStringLiteral("nyaa")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("nyaaThreadId")] = result.threadId;
+        } else if (result.trackerName == QStringLiteral("rutor")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("rutorThreadId")] = result.threadId;
+            if (!result.href.isEmpty())
+                info[QStringLiteral("rutorUrl")] = result.href;
+        } else if (result.trackerName == QStringLiteral("1337x")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("x1337ThreadId")] = result.threadId;
+            if (!result.href.isEmpty())
+                info[QStringLiteral("x1337Url")] = result.href;
         }
     }
 
-    if (!trackers.isEmpty()) {
-        info["trackers"] = trackers;
+    if (!bestDescription.isEmpty())
+        info[QStringLiteral("description")] = bestDescription;
+    if (!sourceDescriptions.isEmpty())
+        info[QStringLiteral("sourceDescriptions")] = sourceDescriptions;
+    if (!technicalInfo.isEmpty())
+        info[QStringLiteral("technicalInfo")] = technicalInfo;
+    if (!sources.isEmpty()) {
+        // Keep the old trackers[] key for backwards compatibility with peer
+        // payloads, but metadataSources is what the native UI presents.
+        info[QStringLiteral("trackers")] = sources;
+        info[QStringLiteral("metadataSources")] = sources;
+        info[QStringLiteral("metadataSource")] = QStringLiteral("Tracker sites");
     }
 
+    const bool found = !it->results.isEmpty();
     pendingScrapes_.erase(it);
     locker.unlock();
 
-    // This hash is done — free its concurrency slot and let queued scrapes start.
     {
         QMutexLocker qlock(&queueMutex_);
-        if (activeRequests_ > 0) {
+        if (activeRequests_ > 0)
             activeRequests_--;
-        }
     }
     processQueue();
 
-    // Deliver the payload first so a direct-connected service can persist it
-    // before observers see the terminal success signal.
-    const bool found = !trackers.isEmpty();
-    if (found) {
-        emit scraped(hash, info);
+    // A failed lookup must be retryable immediately. The old cooldown recorded
+    // failures too, which made the Retry button silently do nothing for an hour.
+    if (!found) {
+        QMutexLocker recentLocker(&recentChecksMutex_);
+        recentChecks_.remove(hash);
     }
+
+    if (found)
+        emit scraped(hash, info);
     emit scrapeFinished(hash, found);
 }
 
