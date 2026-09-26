@@ -63,6 +63,9 @@ void TrackerService::onCountsScraped(const QString& hash, int seeders, int leech
 
 void TrackerService::onInfoScraped(const QString& hash, const QJsonObject& info)
 {
+    // Emit regardless of persistence: a search hit can come from a peer and may
+    // not have been cloned into our repository yet.
+    emit infoAvailable(hash, info);
     repository_->mergeInfo(hash, info);
 }
 
