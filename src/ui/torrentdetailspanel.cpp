@@ -198,7 +198,7 @@ void TorrentDetailsPanel::setupUi()
     sepTracker->setFixedHeight(1);
     trackerInfoLayout->addWidget(sepTracker);
 
-    QLabel* trackerInfoTitle = new QLabel(tr("Tracker Info"));
+    QLabel* trackerInfoTitle = new QLabel(tr("Torrent Info"));
     trackerInfoTitle->setObjectName("sectionTitle");
     trackerInfoLayout->addWidget(trackerInfoTitle);
 
@@ -447,6 +447,8 @@ void TorrentDetailsPanel::setApplication(rats::app::Application* app)
         connect(fav, &rats::app::FavoritesStore::favoritesChanged, this, &TorrentDetailsPanel::updateFavoriteButton);
     }
     if (auto* trackers = app_->trackers()) {
+        connect(trackers, &rats::service::TrackerService::infoAvailable, this,
+            &TorrentDetailsPanel::onTrackerInfoAvailable);
         connect(trackers, &rats::service::TrackerService::infoCheckFinished, this,
             &TorrentDetailsPanel::onTrackerInfoCheckFinished);
     }
@@ -1157,6 +1159,20 @@ void TorrentDetailsPanel::showInfoUnavailable(const QString& hash, const QString
     trackerInfoLoadingLabel_->setText(text);
     trackerInfoLoadingLabel_->show();
     retryInfoButton_->show();
+}
+
+void TorrentDetailsPanel::onTrackerInfoAvailable(const QString& hash, const QJsonObject& info)
+{
+    if (hash != currentHash_ || !hasUsefulTrackerInfo(info))
+        return;
+
+    // Merge into the in-memory copy so a later repository refresh cannot make
+    // the just-received direct payload disappear for a remote-only hit.
+    for (auto it = info.constBegin(); it != info.constEnd(); ++it)
+        currentTorrent_.info.insert(it.key(), it.value());
+
+    infoResolved_ = true;
+    updateTrackerInfoDisplay(currentTorrent_.info);
 }
 
 void TorrentDetailsPanel::onTrackerInfoCheckFinished(const QString& hash, bool found)
