@@ -140,3 +140,30 @@ Important invariant:
 Next stage:
 - make Torrent Details render the verified Rutor source URL and structured quality/video/audio/subtitle facts directly from the stored exact-source snapshot;
 - ensure it does not launch post-hoc fallbacks for a verified-source row.
+
+
+### Stage 6 — Torrent Details renders only exact Rutor release data
+
+Commit message: `feat: render exact Rutor release details`.
+
+Stage 5 verification before starting this stage:
+- current Stage 5 HEAD `6a01a3742cc6ce11557b7a7735fab3afea5b5dca`;
+- GitHub Actions run #61 completed successfully;
+- macOS ARM (Apple Silicon): Build, tests, bundle signing and DMG creation all succeeded;
+- Linux x64 and Windows x64: Build and tests succeeded.
+
+Implemented:
+- a verified Rutor source URL is accepted only when `sourceProvider=rutor`, `sourceVerified=true`, host is `rutor.info` or `rutor.is`, and path is a concrete `/torrent/...` page;
+- Torrent Details renders stored exact-source fields directly: `quality`, `video`, every `audioTracks` entry, `subtitles`, and the exact release URL;
+- the exact release URL is both selectable text and a dedicated `Open exact Rutor release` button;
+- for a verified Rutor row, `requestTrackerRefresh()` may refresh swarm counts but returns before any legacy RuTracker/Nyaa/peer/Magnetz/DHT rich-info lookup starts;
+- legacy tracker/search buttons are never shown beside a verified Rutor result; only the exact Rutor page is exposed;
+- the full description remains the snapshot captured from that concrete Rutor page; fallback metadata annotations are not mixed into it;
+- unknown file count from a source-first result is displayed as `-`, not falsely as `0 files`.
+
+Invariant after this stage:
+- selecting a verified search result must never trigger a title-based attempt to find a different tracker page;
+- the only website button for such a row must open the concrete Rutor release page stored with its verified info-hash.
+
+Next stage:
+- build the macOS ARM artifact and manually verify the UI with the known Police Academy / Under Siege cases before considering merge to `master`.
