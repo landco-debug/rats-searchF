@@ -119,9 +119,9 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
         }
     }
 
-    loadSettings();
-
     setWindowTitle(tr("Rats Search %1 - BitTorrent P2P Search Engine").arg(RATSSEARCH_VERSION_STRING));
+    // Default only. Persisted geometry is restored after the widgets exist, so
+    // it is not immediately overwritten by this resize.
     resize(1400, 900);
     setWindowIcon(QIcon(":/images/icon.png"));
     setAcceptDrops(true); // drag & drop .torrent files
@@ -131,6 +131,11 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     setupMenuBar();
     setupStatusBar();
     setupSystemTray();
+
+    // Restore UI state only after every referenced widget/header/splitter exists.
+    // The old code restored before setupUi() and then immediately called
+    // resize(1400, 900), which discarded most of the persisted state.
+    loadSettings();
 
     // Hand the running application to every tab/panel, then wire the signals.
     wireWidgets();
@@ -1143,14 +1148,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
         return;
     }
 
-    // Confirm exit.
-    QMessageBox::StandardButton reply = QMessageBox::question(
-        this, tr("Confirm Exit"), tr("Are you sure you want to exit Rats Search?"), QMessageBox::Yes | QMessageBox::No);
-    if (reply == QMessageBox::No) {
-        event->ignore();
-        return;
-    }
-
+    // Close immediately. The previous confirmation dialog made an ordinary
+    // macOS Quit/close action require a redundant second confirmation.
     // Persist UI state; service shutdown (DB, P2P, session) is
     // main()/Application's job.
     saveSettings();
@@ -2290,17 +2289,77 @@ void MainWindow::changeEvent(QEvent* event)
 }
 
 // ============================================================================
-// Settings persistence (window geometry only; config is owned by ConfigStore)
+// UI settings persistence. Application behaviour settings remain in ConfigStore;
+// this block owns only per-window/view state.
 // ============================================================================
 
 void MainWindow::loadSettings()
 {
-    QSettings windowSettings("RatsSearch", "RatsSearch");
-    if (windowSettings.contains("window/geometry"))
-        restoreGeometry(windowSettings.value("window/geometry").toByteArray());
-    if (windowSettings.contains("window/state"))
-        restoreState(windowSettings.value("window/state").toByteArray());
-    qInfo() << "Window settings loaded";
+    QSettings s("RatsSearch", "RatsSearch");
+
+    if (s.contains("window/geometry"))
+        restoreGeometry(s.value("window/geometry").toByteArray());
+    if (s.contains("window/state"))
+        restoreState(s.value("window/state").toByteArray());
+
+    if (resultsTableView) {
+        QHeaderView* header = resultsTableView->horizontalHeader();
+        if (s.contains("search/headerState"))
+            header->restoreState(s.value("search/headerState").toByteArray());
+
+        if (s.contains("search/headerSortColumn")) {
+            const int column = s.value("search/headerSortColumn").toInt();
+            const auto order = static_cast<Qt::SortOrder>(
+                s.value("search/headerSortOrder", static_cast<int>(Qt::DescendingOrder)).toInt());
+            if (column >= 0 && column < SearchResultModel::ColumnCount)
+                resultsTableView->sortByColumn(column, order);
+        }
+    }
+
+    if (mainSplitter && s.contains("splitters/main"))
+        mainSplitter->restoreState(s.value("splitters/main").toByteArray());
+    if (verticalSplitter && s.contains("splitters/vertical"))
+        verticalSplitter->restoreState(s.value("splitters/vertical").toByteArray());
+
+    if (typeComboBox) {
+        const int index = typeComboBox->findData(s.value("search/contentType", QString()).toString());
+        if (index >= 0)
+            typeComboBox->setCurrentIndex(index);
+    }
+    if (sortComboBox) {
+        const int index = sortComboBox->findData(s.value("search/order", QStringLiteral("seeders_desc")).toString());
+        if (index >= 0)
+            sortComboBox->setCurrentIndex(index);
+    }
+
+    auto restoreUnit = [&s](QComboBox* combo, const char* key) {
+        if (!combo || !s.contains(key))
+            return;
+        const qint64 multiplier = s.value(key).toLongLong();
+        const int index = combo->findData(QVariant::fromValue<qint64>(multiplier));
+        if (index >= 0)
+            combo->setCurrentIndex(index);
+    };
+    restoreUnit(sizeMinUnit, "filters/sizeMinUnit");
+    restoreUnit(sizeMaxUnit, "filters/sizeMaxUnit");
+
+    if (sizeMinSpin)
+        sizeMinSpin->setValue(s.value("filters/sizeMin", 0.0).toDouble());
+    if (sizeMaxSpin)
+        sizeMaxSpin->setValue(s.value("filters/sizeMax", 0.0).toDouble());
+    if (filesMinSpin)
+        filesMinSpin->setValue(s.value("filters/filesMin", 0).toInt());
+    if (filesMaxSpin)
+        filesMaxSpin->setValue(s.value("filters/filesMax", 0).toInt());
+
+    if (tabWidget) {
+        const int tab = s.value("tabs/current", 0).toInt();
+        if (tab >= 0 && tab < tabWidget->count())
+            tabWidget->setCurrentIndex(tab);
+    }
+
+    updateSearchFiltersButton();
+    qInfo() << "UI settings loaded";
 }
 
 void MainWindow::saveSettings()
@@ -2308,12 +2367,45 @@ void MainWindow::saveSettings()
     if (app_ && app_->config())
         app_->config()->save();
 
-    QSettings windowSettings("RatsSearch", "RatsSearch");
-    windowSettings.setValue("window/geometry", saveGeometry());
-    windowSettings.setValue("window/state", saveState());
-    windowSettings.sync();
+    QSettings s("RatsSearch", "RatsSearch");
+    s.setValue("window/geometry", saveGeometry());
+    s.setValue("window/state", saveState());
 
-    qInfo() << "Settings saved";
+    if (resultsTableView) {
+        QHeaderView* header = resultsTableView->horizontalHeader();
+        s.setValue("search/headerState", header->saveState());
+        s.setValue("search/headerSortColumn", header->sortIndicatorSection());
+        s.setValue("search/headerSortOrder", static_cast<int>(header->sortIndicatorOrder()));
+    }
+
+    if (mainSplitter)
+        s.setValue("splitters/main", mainSplitter->saveState());
+    if (verticalSplitter)
+        s.setValue("splitters/vertical", verticalSplitter->saveState());
+
+    if (typeComboBox)
+        s.setValue("search/contentType", typeComboBox->currentData().toString());
+    if (sortComboBox)
+        s.setValue("search/order", sortComboBox->currentData().toString());
+
+    if (sizeMinSpin)
+        s.setValue("filters/sizeMin", sizeMinSpin->value());
+    if (sizeMaxSpin)
+        s.setValue("filters/sizeMax", sizeMaxSpin->value());
+    if (sizeMinUnit)
+        s.setValue("filters/sizeMinUnit", sizeMinUnit->currentData().toLongLong());
+    if (sizeMaxUnit)
+        s.setValue("filters/sizeMaxUnit", sizeMaxUnit->currentData().toLongLong());
+    if (filesMinSpin)
+        s.setValue("filters/filesMin", filesMinSpin->value());
+    if (filesMaxSpin)
+        s.setValue("filters/filesMax", filesMaxSpin->value());
+
+    if (tabWidget)
+        s.setValue("tabs/current", tabWidget->currentIndex());
+
+    s.sync();
+    qInfo() << "UI settings saved";
 }
 
 // ============================================================================
