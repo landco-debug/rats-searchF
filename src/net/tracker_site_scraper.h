@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QQueue>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <atomic>
