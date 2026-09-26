@@ -1138,8 +1138,8 @@ void TorrentDetailsPanel::requestTrackerRefresh()
         trackerUrlsLabel_->hide();
         trackerInfoLoadingLabel_->setText(tr("🔍 Searching release descriptions and media details…"));
         trackerInfoLoadingLabel_->show();
-        // The user never has to wait for every source to fail before getting a
-        // way forward: reference searches are available immediately.
+        // Concrete matched release links appear incrementally as resolvers find
+        // them. Generic unverified tracker-search links are intentionally absent.
         rebuildMetadataLinks(currentTorrent_.info);
     }
 
@@ -1399,13 +1399,11 @@ void TorrentDetailsPanel::showInfoUnavailable(const QString& hash, const QString
     descriptionToggle_->hide();
     posterLabel_->hide();
 
-    // Requirement: even when no source can return a machine-readable release
-    // card, never leave the user at a dead end. Offer direct exact-hash/title
-    // searches on sites that expose human release descriptions.
+    // Show only concrete release pages that were actually matched. If none were
+    // found, do not pretend that a generic tracker search is a usable fallback.
     rebuildMetadataLinks(currentTorrent_.info);
 
-    QString text = tr("⚠️ Detailed torrent information is unavailable from automatic sources. "
-                      "Use one of the links below to open a site with a release description.");
+    QString text = tr("⚠️ Exact release information is unavailable from the checked sources.");
     if (!reason.isEmpty())
         text += QStringLiteral("\n") + reason;
     trackerInfoLoadingLabel_->setText(text);
@@ -1749,54 +1747,17 @@ void TorrentDetailsPanel::rebuildMetadataLinks(const QJsonObject& info)
     if (nyaaId > 0)
         addLink(QStringLiteral("Nyaa"), QStringLiteral("https://nyaa.si/view/%1").arg(nyaaId));
 
-    // Only concrete release pages are presented as release references. Hash
-    // links that merely return "not found" are worse than no link.
+    // Only concrete pages that the resolver actually matched to this release
+    // are shown. Never expose generic search-result buttons: they looked useful
+    // but routinely opened "nothing found" pages.
+    addLink(QStringLiteral("OxTorrent release"), info.value(QStringLiteral("oxtorrentUrl")).toString());
+    addLink(QStringLiteral("EXT release"), info.value(QStringLiteral("extUrl")).toString());
     addLink(QStringLiteral("Rutor release"), info.value(QStringLiteral("rutorUrl")).toString());
     addLink(QStringLiteral("1337x release"), info.value(QStringLiteral("x1337Url")).toString());
 
-    // Generic movie links are supplemental and appear only after we already
-    // have enough exact-release information.
-    if (hasReleaseSpecificInfo(info)) {
-        addLink(QStringLiteral("YTS"), info.value(QStringLiteral("ytsUrl")).toString());
-        addLink(QStringLiteral("Wikipedia"), info.value(QStringLiteral("wikipediaUrl")).toString());
-
-        const QString imdbId = info.value(QStringLiteral("imdbId")).toString().trimmed();
-        if (imdbId.startsWith(QStringLiteral("tt")))
-            addLink(QStringLiteral("IMDb"), QStringLiteral("https://www.imdb.com/title/%1/").arg(imdbId));
-    }
-
-    // Last resort: search by the complete release identity, not by movie title.
-    // Include the largest filename because it often carries the release group
-    // omitted from the torrent's display name.
-    if (!hasReleaseSpecificInfo(info) && info.value(QStringLiteral("releaseReferenceUrl")).toString().isEmpty()) {
-        QString query = currentTorrent_.name.trimmed();
-        const rats::domain::File* largest = nullptr;
-        for (const auto& file : currentTorrent_.fileList) {
-            if (!largest || file.size > largest->size)
-                largest = &file;
-        }
-        if (largest && !largest->path.trimmed().isEmpty()) {
-            QString fileName = largest->path;
-            fileName.replace(QLatin1Char('\\'), QLatin1Char('/'));
-            const int slash = fileName.lastIndexOf(QLatin1Char('/'));
-            if (slash >= 0)
-                fileName = fileName.mid(slash + 1);
-            fileName.remove(QRegularExpression(QStringLiteral(R"(\.[A-Za-z0-9]{2,5}$)")));
-            if (!query.contains(fileName, Qt::CaseInsensitive))
-                query += QStringLiteral(" ") + fileName;
-        }
-        query.replace(QRegularExpression(QStringLiteral("[._]+")), QStringLiteral(" "));
-        query.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
-        query = query.trimmed();
-
-        if (!query.isEmpty()) {
-            const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query.left(180)));
-            addLink(tr("Search this exact release on Rutor"),
-                QStringLiteral("https://new-rutor.org/search/%1").arg(encoded));
-            addLink(tr("Search this exact release on RuTracker"),
-                QStringLiteral("https://rutracker.org/forum/tracker.php?nm=%1").arg(encoded));
-        }
-    }
+    // YTS is accepted only on exact info-hash in RichMetadataResolver, so this
+    // is also a concrete release page rather than a generic movie search.
+    addLink(QStringLiteral("YTS release"), info.value(QStringLiteral("ytsUrl")).toString());
 
     trackerLinksWidget_->setVisible(hasLinks);
 }
