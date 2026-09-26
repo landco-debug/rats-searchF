@@ -137,7 +137,7 @@ private:
     // Named constants (no magic numbers in the logic below).
     static constexpr int kInfoHashHexLength = 40; // 20-byte hash as hex
     static constexpr int kEncodingSniffLength = 2000; // bytes scanned for charset
-    static constexpr int kMaxDescriptionLength = 5000; // description clamp
+    static constexpr int kMaxDescriptionLength = 12000; // keep full release/audio/video sections
     static constexpr int kQueuePollIntervalMs = 500; // overflow-queue drain cadence
 
     QNetworkAccessManager* networkManager_;
