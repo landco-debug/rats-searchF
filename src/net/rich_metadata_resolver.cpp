@@ -174,7 +174,7 @@ QString RichMetadataResolver::stripHtml(QString html)
     html.remove(QRegularExpression(QStringLiteral(R"(<[^>]+>)")));
     html.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
     html.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-    html.replace(QStringLiteral("&quot;"), QStringLiteral("""));
+    html.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
     html.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
     html.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
     html.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
