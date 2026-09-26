@@ -1,12 +1,13 @@
 #ifndef RATS_NET_RICH_METADATA_RESOLVER_H
 #define RATS_NET_RICH_METADATA_RESOLVER_H
 
-#include "domain/content.h"
+#include "domain/torrent.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 class QNetworkAccessManager;
 
@@ -29,7 +30,8 @@ class RichMetadataResolver : public QObject {
 public:
     explicit RichMetadataResolver(QObject* parent = nullptr);
 
-    void resolve(const QString& infoHash, const QString& torrentName, rats::domain::ContentCategory category);
+    void resolve(const QString& infoHash, const QString& torrentName, qint64 totalSize,
+        const QVector<rats::domain::File>& files, rats::domain::ContentCategory category);
 
 signals:
     // Incremental patch. Callers should merge rather than replace existing info:
@@ -39,6 +41,12 @@ signals:
 private:
     void requestYts(const QString& hash, const QString& torrentName);
     void requestWikipedia(const QString& hash, const QString& torrentName);
+    void requestRutorReleaseMatch(
+        const QString& hash, const QString& torrentName, qint64 totalSize, const QVector<rats::domain::File>& files);
+    void requestRutorMirror(const QString& hash, const QString& torrentName, qint64 totalSize,
+        const QVector<rats::domain::File>& files, const QStringList& mirrors, int mirrorIndex);
+    void requestRutorDetail(const QString& hash, const QString& candidateUrl, const QString& candidateTitle,
+        const QString& torrentName, qint64 totalSize, qint64 candidateSize);
     void requestCinemeta(const QString& hash, const QString& torrentName, rats::domain::ContentCategory category);
     void requestCinemetaCatalog(
         const QString& hash, const QString& torrentName, const QString& type, bool tryOtherTypeOnFailure);
@@ -48,6 +56,12 @@ private:
         const QString& hash, const QString& torrentName, const QString& type, const QString& imdbId);
 
     static QString normalizedTitle(const QString& value);
+    static QString releaseSearchQuery(const QString& torrentName, const QVector<rats::domain::File>& files);
+    static int releaseCandidateScore(
+        const QString& torrentName, const QVector<rats::domain::File>& files, qint64 totalSize,
+        const QString& candidateTitle, qint64 candidateSize, bool exactHash);
+    static qint64 parseHumanSize(const QString& text);
+    static QString stripHtml(QString html);
     static int candidateScore(const QString& torrentName, const QJsonObject& candidate);
     static QString streamInfoHash(const QJsonObject& stream);
     static QJsonArray sourceArray(const QString& source);
