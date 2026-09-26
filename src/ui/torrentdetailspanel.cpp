@@ -28,6 +28,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QScrollArea>
+#include <QSet>
 #include <QStyle>
 #include <QTimer>
 #include <QUrl>
@@ -1683,7 +1684,15 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         retryInfoButton_->hide();
     }
 
-    // Rebuild source links.
+    rebuildMetadataLinks(info);
+
+    const QString trackerCategory = info.value(QStringLiteral("contentCategory")).toString().trimmed();
+    if (!trackerCategory.isEmpty())
+        categoryLabel_->setText(trackerCategory);
+}
+
+void TorrentDetailsPanel::rebuildMetadataLinks(const QJsonObject& info)
+{
     while (trackerLinksLayout_->count() > 1) {
         QLayoutItem* item = trackerLinksLayout_->takeAt(0);
         if (item->widget())
@@ -1692,14 +1701,18 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
     }
 
     bool hasLinks = false;
-    auto addLink = [this, &hasLinks](const QString& label, const QString& url) {
-        if (url.trimmed().isEmpty())
+    QSet<QString> seenUrls;
+    auto addLink = [this, &hasLinks, &seenUrls](const QString& label, const QString& url) {
+        const QString trimmed = url.trimmed();
+        if (trimmed.isEmpty() || seenUrls.contains(trimmed))
             return;
+        seenUrls.insert(trimmed);
+
         QPushButton* button = new QPushButton(QStringLiteral("🔗 ") + label);
         button->setObjectName("trackerLinkButton");
         button->setCursor(Qt::PointingHandCursor);
-        button->setToolTip(url);
-        connect(button, &QPushButton::clicked, this, [url]() { QDesktopServices::openUrl(QUrl(url)); });
+        button->setToolTip(trimmed);
+        connect(button, &QPushButton::clicked, this, [trimmed]() { QDesktopServices::openUrl(QUrl(trimmed)); });
         trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, button);
         hasLinks = true;
     };
@@ -1716,6 +1729,7 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
     addLink(QStringLiteral("Rutor"), info.value(QStringLiteral("rutorUrl")).toString());
     addLink(QStringLiteral("1337x"), info.value(QStringLiteral("x1337Url")).toString());
     addLink(QStringLiteral("YTS"), info.value(QStringLiteral("ytsUrl")).toString());
+    addLink(QStringLiteral("Wikipedia"), info.value(QStringLiteral("wikipediaUrl")).toString());
 
     const QString imdbId = info.value(QStringLiteral("imdbId")).toString().trimmed();
     if (imdbId.startsWith(QStringLiteral("tt")))
@@ -1723,9 +1737,37 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
 
     addLink(QStringLiteral("Magnetz"), info.value(QStringLiteral("magnetzUrl")).toString());
 
-    const QString trackerCategory = info.value(QStringLiteral("contentCategory")).toString().trimmed();
-    if (!trackerCategory.isEmpty())
-        categoryLabel_->setText(trackerCategory);
+    // Guarantee a useful escape hatch for every selected torrent. If the exact
+    // release could not be enriched, offer searches on sites that normally have
+    // full release cards (description, video/audio, translation, subtitles).
+    if (!hasReleaseSpecificInfo(info)) {
+        QString query = rats::net::metadata::cleanMediaTitle(currentTorrent_.name);
+        const int year = rats::net::metadata::extractYear(currentTorrent_.name);
+        if (year > 0)
+            query += QStringLiteral(" ") + QString::number(year);
+        if (query.trimmed().isEmpty())
+            query = currentTorrent_.name.trimmed();
+
+        if (!currentHash_.isEmpty()) {
+            addLink(tr("RuTracker exact hash"),
+                QStringLiteral("https://rutracker.org/forum/viewtopic.php?h=%1").arg(currentHash_));
+            addLink(tr("1337x exact hash"),
+                QStringLiteral("https://1337x.to/srch?search=%1")
+                    .arg(QString::fromLatin1(QUrl::toPercentEncoding(currentHash_))));
+        }
+
+        if (!query.isEmpty()) {
+            const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query));
+            addLink(tr("Find description on Rutor"), QStringLiteral("https://rutor.info/search/%1").arg(encoded));
+            addLink(tr("Find description on RuTracker"),
+                QStringLiteral("https://rutracker.org/forum/tracker.php?nm=%1").arg(encoded));
+
+            const bool cyrillic = query.contains(QRegularExpression(QStringLiteral("[\\x{0400}-\\x{04FF}]")));
+            const QString wikiHost = cyrillic ? QStringLiteral("ru.wikipedia.org") : QStringLiteral("en.wikipedia.org");
+            addLink(tr("Find movie info"),
+                QStringLiteral("https://%1/w/index.php?search=%2").arg(wikiHost, encoded));
+        }
+    }
 
     trackerLinksWidget_->setVisible(hasLinks);
 }
