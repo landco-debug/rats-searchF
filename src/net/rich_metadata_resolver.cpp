@@ -306,7 +306,10 @@ void RichMetadataResolver::resolve(const QString& infoHash, const QString& torre
     // Generic title metadata is supplemental only. It can add synopsis/poster,
     // but never marks a release lookup complete by itself.
     requestYts(hash, torrentName);
-    requestWikipedia(hash, torrentName);
+    // Cinemeta provides cleaner movie/series synopsis matching. Wikipedia was
+    // intentionally removed from the automatic path because ambiguous titles
+    // (for example "Se7en") can resolve to disambiguation pages and pollute an
+    // otherwise exact release card.
     requestCinemeta(hash, torrentName, category);
 }
 
