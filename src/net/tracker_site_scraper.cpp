@@ -1,4 +1,5 @@
 #include "net/tracker_site_scraper.h"
+#include "net/media_metadata_utils.h"
 
 #include <QDebug>
 #include <QJsonArray>
@@ -6,6 +7,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSet>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 
@@ -23,6 +26,8 @@ constexpr const char* kUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ap
 const QVector<TrackerSiteScraper::Strategy> TrackerSiteScraper::kStrategies = {
     &TrackerSiteScraper::scrapeRutracker,
     &TrackerSiteScraper::scrapeNyaa,
+    &TrackerSiteScraper::scrape1337x,
+    &TrackerSiteScraper::scrapeRutor,
 };
 
 // ============================================================================
@@ -158,6 +163,13 @@ void TrackerSiteScraper::processQueue()
     if (pendingQueue_.isEmpty() && queueTimer_) {
         queueTimer_->stop();
     }
+}
+
+QString TrackerSiteScraper::pendingNameForHash(const QString& hash) const
+{
+    QMutexLocker locker(&pendingMutex_);
+    const auto it = pendingScrapes_.constFind(hash);
+    return it == pendingScrapes_.constEnd() ? QString() : it->name;
 }
 
 // ============================================================================
@@ -486,6 +498,367 @@ TrackerSiteInfo TrackerSiteScraper::parseNyaaViewHtml(const QByteArray& rawData)
 }
 
 // ============================================================================
+// 1337x strategy (restored from the legacy Electron implementation)
+// ============================================================================
+
+void TrackerSiteScraper::scrape1337x(const QString& hash)
+{
+    // 1337x supports searching by the literal info hash. The search result is
+    // still verified against the magnet on the detail page before any metadata
+    // is accepted.
+    const QUrl url(QStringLiteral("https://1337x.to/srch?search=%1")
+                       .arg(QString::fromLatin1(QUrl::toPercentEncoding(hash))));
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
+    request.setRawHeader("Accept", "text/html,application/xhtml+xml");
+    request.setTransferTimeout(kTimeoutMs);
+
+    QNetworkReply* reply = networkManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
+        reply->deleteLater();
+
+        TrackerSiteInfo empty;
+        empty.trackerName = QStringLiteral("1337x");
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qDebug() << "TrackerSiteScraper: 1337x search failed:" << reply->errorString();
+            onStrategyComplete(hash, empty);
+            return;
+        }
+
+        const QString html = QString::fromUtf8(reply->readAll());
+        QRegularExpression linkRe(
+            QStringLiteral(R"re(href\s*=\s*["'](/torrent/(\d+)/[^"']*)["'])re"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = linkRe.match(html);
+        if (!match.hasMatch()) {
+            onStrategyComplete(hash, empty);
+            return;
+        }
+
+        const QString relative = match.captured(1);
+        const QString href = QStringLiteral("https://1337x.to") + relative;
+
+        QNetworkRequest detailRequest { QUrl(href) };
+        detailRequest.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
+        detailRequest.setRawHeader("Accept", "text/html,application/xhtml+xml");
+        detailRequest.setTransferTimeout(kTimeoutMs);
+
+        QNetworkReply* detailReply = networkManager_->get(detailRequest);
+        connect(detailReply, &QNetworkReply::finished, this, [this, detailReply, hash, href]() {
+            detailReply->deleteLater();
+
+            TrackerSiteInfo info;
+            info.trackerName = QStringLiteral("1337x");
+
+            if (detailReply->error() == QNetworkReply::NoError) {
+                const QByteArray raw = detailReply->readAll();
+                const QString page = QString::fromUtf8(raw);
+                const QRegularExpression hashRe(
+                    QStringLiteral(R"(magnet:[^"'<>]*?xt=urn:btih:([A-Fa-f0-9]{40}))"),
+                    QRegularExpression::CaseInsensitiveOption);
+                const QRegularExpressionMatch hashMatch = hashRe.match(page);
+                if (hashMatch.hasMatch()
+                    && hashMatch.captured(1).compare(hash, Qt::CaseInsensitive) == 0) {
+                    info = parse1337xViewHtml(raw, href);
+                }
+            }
+
+            onStrategyComplete(hash, info);
+        });
+    });
+}
+
+TrackerSiteInfo TrackerSiteScraper::parse1337xViewHtml(const QByteArray& rawData, const QString& href)
+{
+    TrackerSiteInfo info;
+    info.trackerName = QStringLiteral("1337x");
+    info.href = href;
+
+    const QString html = QString::fromUtf8(rawData);
+    if (html.isEmpty())
+        return info;
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"(<h1[^>]*>(.*?)</h1>)"), QRegularExpression::DotMatchesEverythingOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch())
+            info.name = stripHtml(match.captured(1)).trimmed();
+    }
+
+    if (info.name.isEmpty())
+        return info;
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(class\s*=\s*["'][^"']*torrent-image[^"']*["'][\s\S]{0,1200}?<img[^>]*(?:src|data-original)\s*=\s*["']([^"']+)["'])re"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch()) {
+            info.poster = match.captured(1).trimmed();
+            if (info.poster.startsWith(QStringLiteral("//")))
+                info.poster.prepend(QStringLiteral("https:"));
+            else if (info.poster.startsWith(QLatin1Char('/')))
+                info.poster.prepend(QStringLiteral("https://1337x.to"));
+        }
+    }
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(<div[^>]*id\s*=\s*["']description["'][^>]*>(.*?)</div>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch())
+            info.description = truncateDescription(stripHtml(match.captured(1)).trimmed());
+    }
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(class\s*=\s*["'][^"']*torrent-category-detail[^"']*["'][\s\S]{0,1800}?<span[^>]*>(.*?)</span>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch())
+            info.contentCategory = stripHtml(match.captured(1)).trimmed();
+    }
+
+    {
+        const QRegularExpression re(QStringLiteral(R"(/torrent/(\d+)/)"));
+        const QRegularExpressionMatch match = re.match(href);
+        if (match.hasMatch())
+            info.threadId = match.captured(1).toInt();
+    }
+
+    info.success = true;
+    qInfo() << "TrackerSiteScraper: 1337x found:" << info.name.left(60);
+    return info;
+}
+
+// ============================================================================
+// Rutor strategy (restored, with exact-hash verification)
+// ============================================================================
+
+void TrackerSiteScraper::scrapeRutor(const QString& hash)
+{
+    const QString torrentName = pendingNameForHash(hash);
+    QString query = metadata::cleanMediaTitle(torrentName);
+    const int year = metadata::extractYear(torrentName);
+    if (year > 0)
+        query += QStringLiteral(" ") + QString::number(year);
+
+    if (query.trimmed().size() < 3) {
+        TrackerSiteInfo empty;
+        empty.trackerName = QStringLiteral("rutor");
+        onStrategyComplete(hash, empty);
+        return;
+    }
+
+    const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query.trimmed()));
+    const QUrl url(QStringLiteral("https://rutor.info/search/%1").arg(encoded));
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
+    request.setRawHeader("Accept", "text/html,application/xhtml+xml");
+    request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
+    request.setTransferTimeout(kTimeoutMs);
+
+    QNetworkReply* reply = networkManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash]() {
+        reply->deleteLater();
+
+        TrackerSiteInfo empty;
+        empty.trackerName = QStringLiteral("rutor");
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qDebug() << "TrackerSiteScraper: Rutor search failed:" << reply->errorString();
+            onStrategyComplete(hash, empty);
+            return;
+        }
+
+        const QByteArray raw = reply->readAll();
+        QString html;
+        const QString preview = QString::fromLatin1(raw.left(kEncodingSniffLength));
+        if (preview.contains(QStringLiteral("windows-1251"), Qt::CaseInsensitive))
+            html = decodeWindows1251(raw);
+        else
+            html = QString::fromUtf8(raw);
+
+        QStringList candidates;
+        QSet<QString> seen;
+
+        // Search-result rows normally expose both the detail-page link and a
+        // magnet. Match the info hash right here when possible; this avoids
+        // probing a handful of same-title releases and dramatically improves
+        // coverage for films with many encodes.
+        const QRegularExpression rowRe(
+            QStringLiteral(R"re(<tr[^>]*>(.*?)</tr>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator rowIt = rowRe.globalMatch(html);
+        while (rowIt.hasNext()) {
+            const QString row = rowIt.next().captured(1);
+            const QRegularExpression hashRe(
+                QStringLiteral(R"(magnet:[^"'<>]*?xt=urn:btih:([A-Fa-f0-9]{40}))"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch hashMatch = hashRe.match(row);
+            if (!hashMatch.hasMatch() || hashMatch.captured(1).compare(hash, Qt::CaseInsensitive) != 0)
+                continue;
+
+            const QRegularExpression linkRe(
+                QStringLiteral(R"re(href\s*=\s*["'](/torrent/(\d+)(?:/[^"']*)?)["'])re"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch linkMatch = linkRe.match(row);
+            if (linkMatch.hasMatch()) {
+                const QString exactUrl = QStringLiteral("https://rutor.info") + linkMatch.captured(1);
+                scrapeRutorCandidate(hash, QStringList { exactUrl }, 0);
+                return;
+            }
+        }
+
+        // Some mirrors/search layouts omit the magnet from the listing. Fall
+        // back to checking a broader candidate set by opening detail pages and
+        // verifying their magnet hashes one by one.
+        QRegularExpression linkRe(
+            QStringLiteral(R"re(href\s*=\s*["'](/torrent/(\d+)(?:/[^"']*)?)["'])re"),
+            QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator it = linkRe.globalMatch(html);
+        while (it.hasNext() && candidates.size() < 20) {
+            const QString relative = it.next().captured(1);
+            const QString absolute = QStringLiteral("https://rutor.info") + relative;
+            if (!seen.contains(absolute)) {
+                seen.insert(absolute);
+                candidates.append(absolute);
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            onStrategyComplete(hash, empty);
+            return;
+        }
+
+        scrapeRutorCandidate(hash, candidates, 0);
+    });
+}
+
+void TrackerSiteScraper::scrapeRutorCandidate(const QString& hash, const QStringList& candidateUrls, int index)
+{
+    if (stopping_.load() || index >= candidateUrls.size()) {
+        TrackerSiteInfo empty;
+        empty.trackerName = QStringLiteral("rutor");
+        onStrategyComplete(hash, empty);
+        return;
+    }
+
+    const QString href = candidateUrls.at(index);
+    QNetworkRequest request { QUrl(href) };
+    request.setHeader(QNetworkRequest::UserAgentHeader, kUserAgent);
+    request.setRawHeader("Accept", "text/html,application/xhtml+xml");
+    request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
+    request.setTransferTimeout(kTimeoutMs);
+
+    QNetworkReply* reply = networkManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hash, candidateUrls, index, href]() {
+        reply->deleteLater();
+
+        if (reply->error() == QNetworkReply::NoError) {
+            const QByteArray raw = reply->readAll();
+            QString html;
+            const QString preview = QString::fromLatin1(raw.left(kEncodingSniffLength));
+            if (preview.contains(QStringLiteral("windows-1251"), Qt::CaseInsensitive))
+                html = decodeWindows1251(raw);
+            else
+                html = QString::fromUtf8(raw);
+
+            const QRegularExpression hashRe(
+                QStringLiteral(R"(magnet:[^"'<>]*?xt=urn:btih:([A-Fa-f0-9]{40}))"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch match = hashRe.match(html);
+            if (match.hasMatch() && match.captured(1).compare(hash, Qt::CaseInsensitive) == 0) {
+                onStrategyComplete(hash, parseRutorHtml(raw, href));
+                return;
+            }
+        }
+
+        // The title search can contain many versions of one movie. Never borrow
+        // the description from a different release: walk a small candidate set
+        // until the magnet hash proves identity.
+        scrapeRutorCandidate(hash, candidateUrls, index + 1);
+    });
+}
+
+TrackerSiteInfo TrackerSiteScraper::parseRutorHtml(const QByteArray& rawData, const QString& href)
+{
+    TrackerSiteInfo info;
+    info.trackerName = QStringLiteral("rutor");
+    info.href = href;
+
+    QString html;
+    const QString preview = QString::fromLatin1(rawData.left(kEncodingSniffLength));
+    if (preview.contains(QStringLiteral("windows-1251"), Qt::CaseInsensitive))
+        html = decodeWindows1251(rawData);
+    else
+        html = QString::fromUtf8(rawData);
+    if (html.isEmpty())
+        return info;
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"(<h1[^>]*>(.*?)</h1>)"), QRegularExpression::DotMatchesEverythingOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch())
+            info.name = stripHtml(match.captured(1)).trimmed();
+    }
+    if (info.name.isEmpty())
+        return info;
+
+    QString detailsHtml;
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(<table[^>]*id\s*=\s*["']details["'][^>]*>(.*?)</table>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(html);
+        if (match.hasMatch()) {
+            detailsHtml = match.captured(1);
+            info.description = truncateDescription(stripHtml(detailsHtml).trimmed());
+        }
+    }
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(<img[^>]*src\s*=\s*["']([^"']+)["'][^>]*>)re"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(detailsHtml);
+        if (match.hasMatch()) {
+            info.poster = match.captured(1).trimmed();
+            if (info.poster.startsWith(QStringLiteral("//")))
+                info.poster.prepend(QStringLiteral("https:"));
+            else if (info.poster.startsWith(QLatin1Char('/')))
+                info.poster.prepend(QStringLiteral("https://rutor.info"));
+        }
+    }
+
+    {
+        const QRegularExpression re(
+            QStringLiteral(R"re(<td[^>]*class\s*=\s*["'][^"']*header[^"']*["'][^>]*>\s*Категория\s*</td>\s*<td[^>]*>(.*?)</td>)re"),
+            QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = re.match(detailsHtml);
+        if (match.hasMatch())
+            info.contentCategory = stripHtml(match.captured(1)).trimmed();
+    }
+
+    {
+        const QRegularExpression re(QStringLiteral(R"(/torrent/(\d+))"));
+        const QRegularExpressionMatch match = re.match(href);
+        if (match.hasMatch())
+            info.threadId = match.captured(1).toInt();
+    }
+
+    info.success = true;
+    qInfo() << "TrackerSiteScraper: Rutor found exact hash:" << info.name.left(60);
+    return info;
+}
+
+// ============================================================================
 // Result merging
 // ============================================================================
 
@@ -511,81 +884,107 @@ void TrackerSiteScraper::checkAllComplete(const QString& hash)
 {
     QMutexLocker locker(&pendingMutex_);
     auto it = pendingScrapes_.find(hash);
-    if (it == pendingScrapes_.end()) {
+    if (it == pendingScrapes_.end())
         return;
-    }
 
-    if (it->pendingCount > 0) {
-        return; // still waiting for some strategies
-    }
+    if (it->pendingCount > 0)
+        return;
 
-    // All strategies complete — fold the results into a single JSON object. Only
-    // the freshly scraped keys are emitted; the listener merges them into the
-    // stored torrent.
     QJsonObject info;
-    QJsonArray trackers;
+    QJsonArray sources;
+    QJsonObject sourceDescriptions;
+    QJsonObject technicalInfo;
+    int bestDescriptionScore = -1;
+    QString bestDescription;
 
     for (const TrackerSiteInfo& result : it->results) {
-        // Add tracker to the list (deduplicated).
-        bool alreadyListed = false;
-        for (const QJsonValue& t : trackers) {
-            if (t.toString() == result.trackerName) {
-                alreadyListed = true;
+        bool listed = false;
+        for (const QJsonValue& value : sources) {
+            if (value.toString().compare(result.trackerName, Qt::CaseInsensitive) == 0) {
+                listed = true;
                 break;
             }
         }
-        if (!alreadyListed) {
-            trackers.append(result.trackerName);
+        if (!listed)
+            sources.append(result.trackerName);
+
+        if (info.value(QStringLiteral("poster")).toString().isEmpty() && !result.poster.isEmpty())
+            info[QStringLiteral("poster")] = result.poster;
+
+        if (info.value(QStringLiteral("contentCategory")).toString().isEmpty() && !result.contentCategory.isEmpty())
+            info[QStringLiteral("contentCategory")] = result.contentCategory;
+
+        if (info.value(QStringLiteral("trackerName")).toString().isEmpty() && !result.name.isEmpty())
+            info[QStringLiteral("trackerName")] = result.name;
+
+        if (!result.description.isEmpty()) {
+            sourceDescriptions[result.trackerName] = result.description;
+            const int score = metadata::descriptionRichness(result.description);
+            if (score > bestDescriptionScore) {
+                bestDescriptionScore = score;
+                bestDescription = result.description;
+            }
+
+            technicalInfo = metadata::mergeTechnicalInfo(
+                technicalInfo, metadata::extractTechnicalInfo(result.name + QLatin1Char('\n') + result.description));
+        } else if (!result.name.isEmpty()) {
+            technicalInfo
+                = metadata::mergeTechnicalInfo(technicalInfo, metadata::extractTechnicalInfo(result.name));
         }
 
-        // Merge shared fields — first found wins for poster / description.
-        if (info["poster"].toString().isEmpty() && !result.poster.isEmpty()) {
-            info["poster"] = result.poster;
-        }
-        if (info["description"].toString().isEmpty() && !result.description.isEmpty()) {
-            info["description"] = result.description;
-        }
-
-        // Tracker-specific payloads.
-        if (result.trackerName == "rutracker") {
-            if (result.threadId > 0) {
-                info["rutrackerThreadId"] = result.threadId;
-            }
-            if (!result.contentCategory.isEmpty()) {
-                info["contentCategory"] = result.contentCategory;
-            }
-            if (!result.name.isEmpty() && !info.contains("trackerName")) {
-                info["trackerName"] = result.name;
-            }
-        } else if (result.trackerName == "nyaa") {
-            if (result.threadId > 0) {
-                info["nyaaThreadId"] = result.threadId;
-            }
+        if (result.trackerName == QStringLiteral("rutracker")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("rutrackerThreadId")] = result.threadId;
+        } else if (result.trackerName == QStringLiteral("nyaa")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("nyaaThreadId")] = result.threadId;
+        } else if (result.trackerName == QStringLiteral("rutor")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("rutorThreadId")] = result.threadId;
+            if (!result.href.isEmpty())
+                info[QStringLiteral("rutorUrl")] = result.href;
+        } else if (result.trackerName == QStringLiteral("1337x")) {
+            if (result.threadId > 0)
+                info[QStringLiteral("x1337ThreadId")] = result.threadId;
+            if (!result.href.isEmpty())
+                info[QStringLiteral("x1337Url")] = result.href;
         }
     }
 
-    if (!trackers.isEmpty()) {
-        info["trackers"] = trackers;
+    if (!bestDescription.isEmpty())
+        info[QStringLiteral("description")] = bestDescription;
+    if (!sourceDescriptions.isEmpty())
+        info[QStringLiteral("sourceDescriptions")] = sourceDescriptions;
+    if (!technicalInfo.isEmpty())
+        info[QStringLiteral("technicalInfo")] = technicalInfo;
+    if (!sources.isEmpty()) {
+        // Keep the old trackers[] key for backwards compatibility with peer
+        // payloads, but metadataSources is what the native UI presents.
+        info[QStringLiteral("trackers")] = sources;
+        info[QStringLiteral("metadataSources")] = sources;
+        info[QStringLiteral("metadataSource")] = QStringLiteral("Tracker sites");
     }
 
+    const bool found = !it->results.isEmpty();
     pendingScrapes_.erase(it);
     locker.unlock();
 
-    // This hash is done — free its concurrency slot and let queued scrapes start.
     {
         QMutexLocker qlock(&queueMutex_);
-        if (activeRequests_ > 0) {
+        if (activeRequests_ > 0)
             activeRequests_--;
-        }
     }
     processQueue();
 
-    // Deliver the payload first so a direct-connected service can persist it
-    // before observers see the terminal success signal.
-    const bool found = !trackers.isEmpty();
-    if (found) {
-        emit scraped(hash, info);
+    // A failed lookup must be retryable immediately. The old cooldown recorded
+    // failures too, which made the Retry button silently do nothing for an hour.
+    if (!found) {
+        QMutexLocker recentLocker(&recentChecksMutex_);
+        recentChecks_.remove(hash);
     }
+
+    if (found)
+        emit scraped(hash, info);
     emit scrapeFinished(hash, found);
 }
 
@@ -608,8 +1007,12 @@ QString TrackerSiteScraper::stripHtml(const QString& html)
     // Replace <br>, <br/>, <br /> with newlines.
     text.replace(QRegularExpression("<br\\s*/?>", QRegularExpression::CaseInsensitiveOption), "\n");
 
-    // Replace block-level tags with newlines.
-    text.replace(QRegularExpression("</(?:p|div|li|tr|h[1-6])>", QRegularExpression::CaseInsensitiveOption), "\n");
+    // Replace block/table tags with newlines. Tracker technical
+    // specifications are frequently encoded as tables; treating </td> as a
+    // separator preserves "Video / Audio / Translation" rows after stripping
+    // markup instead of concatenating their labels and values.
+    text.replace(
+        QRegularExpression("</(?:p|div|li|tr|td|th|h[1-6])>", QRegularExpression::CaseInsensitiveOption), "\n");
 
     // Remove all remaining HTML tags.
     text.replace(QRegularExpression("<[^>]*>"), "");

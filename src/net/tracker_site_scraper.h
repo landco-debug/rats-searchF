@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QQueue>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <atomic>
@@ -21,18 +22,20 @@ namespace rats::net {
 // the parse* helpers fill it in and checkAllComplete() folds the per-tracker
 // DTOs into the single JSON object carried by scraped().
 struct TrackerSiteInfo {
-    QString trackerName; // "rutracker" | "nyaa"
-    QString name; // torrent title as shown on the tracker
+    QString trackerName; // "rutracker" | "nyaa" | "1337x" | "rutor"
+    QString name; // torrent title as shown on the source
     QString poster; // poster image URL
-    QString description; // plain-text description
+    QString description; // human-facing release description
     QString contentCategory; // category / breadcrumb path
-    int threadId = 0; // topic / view id on the tracker
+    QString href; // canonical detail-page URL when one exists
+    int threadId = 0; // topic / view id on the source
     bool success = false;
 };
 
-// Scrapes tracker websites (RuTracker, Nyaa) for a torrent's poster image,
-// description and category, using hand-rolled QRegularExpression HTML parsing
-// (faithfully ported from the legacy Electron "strategies"). Not to be confused
+// Scrapes tracker websites (RuTracker, Nyaa, 1337x and Rutor) for rich,
+// human-facing release information: description, video/audio details, poster and
+// category. The source set restores the legacy Electron strategies and verifies
+// exact hashes where a site can only be searched by title. Not to be confused
 // with SwarmScraper, which announces to trackers for seeder/leecher counts.
 //
 // Pure network-side helper: it NEVER touches the database. All strategies for a
@@ -96,11 +99,19 @@ private:
     void scrapeRutracker(const QString& hash);
     void scrapeNyaa(const QString& hash);
     void scrapeNyaaViewPage(const QString& hash, const QString& viewUrl);
+    void scrape1337x(const QString& hash);
+    void scrapeRutor(const QString& hash);
+    void scrapeRutorCandidate(const QString& hash, const QStringList& candidateUrls, int index);
 
-    // HTML parsers (faithful ports of the legacy regex parsing).
+    // HTML parsers (ports of the legacy strategies, hardened for the current
+    // sites and the richer metadata fields used by the native UI).
     TrackerSiteInfo parseRutrackerHtml(const QByteArray& rawData);
     TrackerSiteInfo parseNyaaSearchHtml(const QByteArray& rawData);
     TrackerSiteInfo parseNyaaViewHtml(const QByteArray& rawData);
+    TrackerSiteInfo parse1337xViewHtml(const QByteArray& rawData, const QString& href);
+    TrackerSiteInfo parseRutorHtml(const QByteArray& rawData, const QString& href);
+
+    QString pendingNameForHash(const QString& hash) const;
 
     // Called by each strategy when it finishes; merges once all have reported.
     void onStrategyComplete(const QString& hash, const TrackerSiteInfo& info);
@@ -126,7 +137,7 @@ private:
     // Named constants (no magic numbers in the logic below).
     static constexpr int kInfoHashHexLength = 40; // 20-byte hash as hex
     static constexpr int kEncodingSniffLength = 2000; // bytes scanned for charset
-    static constexpr int kMaxDescriptionLength = 5000; // description clamp
+    static constexpr int kMaxDescriptionLength = 12000; // keep full release/audio/video sections
     static constexpr int kQueuePollIntervalMs = 500; // overflow-queue drain cadence
 
     QNetworkAccessManager* networkManager_;

@@ -1,6 +1,7 @@
 #ifndef TORRENTDETAILSPANEL_H
 #define TORRENTDETAILSPANEL_H
 
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -16,6 +17,10 @@
 
 namespace rats::app {
 class Application;
+}
+
+namespace rats::net {
+class RichMetadataResolver;
 }
 
 /**
@@ -67,6 +72,7 @@ private slots:
     void onTrackerInfoAvailable(const QString& hash, const QJsonObject& info);
     void onTrackerInfoCheckFinished(const QString& hash, bool found);
     void onRemoteTorrentReceived(const QString& hash, const QJsonObject& data);
+    void onRichMetadataFound(const QString& hash, const QJsonObject& patch);
 
 private:
     void setupUi();
@@ -124,28 +130,37 @@ private:
     // and finally raw BitTorrent DHT/BEP 9 metadata. Every path terminates with
     // either data or a visible error.
     void requestTrackerRefresh();
+    void requestRichMetadataEnrichment(const QString& hash);
     void requestPeerInfoFallback(const QString& hash);
     void requestPublicIndexFallback(const QString& hash);
     void requestDhtMetadataFallback(const QString& hash);
     void showInfoUnavailable(const QString& hash, const QString& reason = QString());
     bool hasUsefulTrackerInfo(const QJsonObject& info) const;
+    bool hasUserFacingInfo(const QJsonObject& info) const;
+    bool hasReleaseSpecificInfo(const QJsonObject& info) const;
+    void mergeInfoPatch(const QJsonObject& patch, bool persist = true);
+    void enrichFromTorrentIdentity();
     void updateTrackerInfoDisplay(const QJsonObject& info);
+    void updateTechnicalInfoDisplay(const QJsonObject& info);
+    void rebuildMetadataLinks(const QJsonObject& info);
     void loadPosterImage(const QString& url);
 
     // Tracker info UI elements
     QWidget* trackerInfoWidget_; // Container for all tracker info
     QLabel* trackerInfoLoadingLabel_; // Current resolution stage / terminal error
-    QLabel* trackerInfoSourceLabel_; // Which fallback source produced the data
-    QLabel* trackerUrlsLabel_; // Raw tracker URLs from fallback metadata
+    QLabel* trackerInfoSourceLabel_; // Human-facing metadata sources
+    QLabel* trackerUrlsLabel_; // Kept for backwards compatibility; hidden in the rich UI
+    QLabel* technicalInfoLabel_; // Resolution/video/audio/language details
     QPushButton* retryInfoButton_; // Retry all resolution paths after failure
     QLabel* posterLabel_; // Poster/cover image
     QLabel* descriptionLabel_; // Description text (expandable)
     QPushButton* descriptionToggle_; // "Show more / Show less" button
     QWidget* trackerLinksWidget_; // Container for tracker link buttons
-    QHBoxLayout* trackerLinksLayout_; // Layout for tracker link buttons
+    QGridLayout* trackerLinksLayout_; // Two-column wrapping layout for source links
     bool descriptionExpanded_ = false;
     QString fullDescription_; // Full description text
     QNetworkAccessManager* posterNetworkManager_;
+    rats::net::RichMetadataResolver* richMetadataResolver_ = nullptr;
 
     // Current torrent data
     QString currentHash_;
@@ -154,8 +169,9 @@ private:
     bool hasVoted_ = false;
 
     // State for the current hash's staged information lookup.
-    bool infoResolved_ = false;
+    bool infoResolved_ = false; // enough human-facing data to stop the spinner
     bool trackerLookupFinished_ = false;
+    bool richMetadataRequested_ = false;
     bool peerFallbackRequested_ = false;
     bool publicIndexFallbackRequested_ = false;
     bool dhtFallbackRequested_ = false;
