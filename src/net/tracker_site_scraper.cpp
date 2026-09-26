@@ -975,8 +975,12 @@ QString TrackerSiteScraper::stripHtml(const QString& html)
     // Replace <br>, <br/>, <br /> with newlines.
     text.replace(QRegularExpression("<br\\s*/?>", QRegularExpression::CaseInsensitiveOption), "\n");
 
-    // Replace block-level tags with newlines.
-    text.replace(QRegularExpression("</(?:p|div|li|tr|h[1-6])>", QRegularExpression::CaseInsensitiveOption), "\n");
+    // Replace block/table tags with newlines. Tracker technical
+    // specifications are frequently encoded as tables; treating </td> as a
+    // separator preserves "Video / Audio / Translation" rows after stripping
+    // markup instead of concatenating their labels and values.
+    text.replace(
+        QRegularExpression("</(?:p|div|li|tr|td|th|h[1-6])>", QRegularExpression::CaseInsensitiveOption), "\n");
 
     // Remove all remaining HTML tags.
     text.replace(QRegularExpression("<[^>]*>"), "");
