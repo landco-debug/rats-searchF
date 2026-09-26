@@ -123,6 +123,7 @@ private:
     // metadata. Every path terminates with either data or a visible error.
     void requestTrackerRefresh();
     void requestPeerInfoFallback(const QString& hash);
+    void requestPublicIndexFallback(const QString& hash);
     void requestDhtMetadataFallback(const QString& hash);
     void showInfoUnavailable(const QString& hash, const QString& reason = QString());
     bool hasUsefulTrackerInfo(const QJsonObject& info) const;
@@ -154,6 +155,7 @@ private:
     bool infoResolved_ = false;
     bool trackerLookupFinished_ = false;
     bool peerFallbackRequested_ = false;
+    bool publicIndexFallbackRequested_ = false;
     bool dhtFallbackRequested_ = false;
     QString lastInfoError_;
 };
