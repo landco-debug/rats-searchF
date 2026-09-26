@@ -12,6 +12,7 @@ TrackerService::TrackerService(net::SwarmScraper* swarmScraper, net::TrackerSite
 {
     connect(swarmScraper_, &net::SwarmScraper::scraped, this, &TrackerService::onCountsScraped);
     connect(siteScraper_, &net::TrackerSiteScraper::scraped, this, &TrackerService::onInfoScraped);
+    connect(siteScraper_, &net::TrackerSiteScraper::scrapeFinished, this, &TrackerService::infoCheckFinished);
 }
 
 void TrackerService::setCountScrapingEnabled(bool enabled)
@@ -42,8 +43,11 @@ void TrackerService::checkCounts(const QString& hash)
 
 void TrackerService::checkInfo(const QString& hash, const QString& name)
 {
-    if (infoEnabled_)
+    if (infoEnabled_) {
         siteScraper_->scrape(hash, name);
+    } else {
+        emit infoCheckFinished(hash, false);
+    }
 }
 
 void TrackerService::onTorrentIndexed(const domain::Torrent& torrent)
