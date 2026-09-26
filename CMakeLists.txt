@@ -58,6 +58,14 @@ else()
 endif()
 set(VERSION_STRING "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${VERSION_BUILD}")
 
+# Qt 6.10 supports macOS 13 and newer. GitHub's macos-latest ARM runner
+# currently uses a much newer macOS SDK; without an explicit deployment target
+# Clang/CMake may stamp the bundle as requiring that runner OS. Finder then
+# shows the prohibitory badge on Sequoia even though the binary is arm64.
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum supported macOS version" FORCE)
+endif()
+
 project(rats-search VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
