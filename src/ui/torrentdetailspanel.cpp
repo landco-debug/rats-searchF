@@ -939,15 +939,17 @@ bool TorrentDetailsPanel::hasReleaseSpecificInfo(const QJsonObject& info) const
             ++technicalGroups;
     }
 
-    const bool hasAudioOrLanguage = present(QStringLiteral("audioCodecs")) || present(QStringLiteral("audioChannels"))
-        || present(QStringLiteral("audioDetails")) || present(QStringLiteral("languages"));
+    const bool hasAudioCodec = present(QStringLiteral("audioCodecs"));
+    const bool hasAudioDetails = present(QStringLiteral("audioDetails"));
+    const bool hasLanguages = present(QStringLiteral("languages"));
     const bool hasNarrative = description.size() >= 120 || synopsis.size() >= 120;
 
-    // "1080p" or "Movie · 2160p" by itself is *not* a successful result.
-    // Consider the card complete only when generic narrative plus several exact
-    // release facts are available, or when an exact audio-track description was
-    // obtained.
-    return present(QStringLiteral("audioDetails")) || (hasNarrative && technicalGroups >= 3 && hasAudioOrLanguage);
+    // "1080p", or even "1080p + x264", is not the user-facing release card the
+    // user asked for. A synthesized card is considered complete only when it has
+    // a narrative plus a substantial exact technical profile that includes both
+    // audio and language information. Otherwise we keep searching and expose
+    // external description links.
+    return hasAudioDetails || (hasNarrative && technicalGroups >= 5 && hasAudioCodec && hasLanguages);
 }
 
 bool TorrentDetailsPanel::hasUsefulTrackerInfo(const QJsonObject& info) const
