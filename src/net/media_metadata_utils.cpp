@@ -78,6 +78,12 @@ QString cleanMediaTitle(const QString& torrentName)
     if (value.isEmpty())
         return value;
 
+    // Release names commonly use dots/underscores as word separators. Normalize
+    // them before looking for SxxEyy/year/quality boundaries; otherwise
+    // "The.Show.S02E03.1080p" never exposes the whitespace boundary required by
+    // those patterns.
+    value = normalizedSpaces(value);
+
     // Prefer the text before a release year; this handles the overwhelming
     // majority of movie and series naming conventions without guessing at
     // individual release-group tags.
@@ -209,7 +215,7 @@ QJsonObject extractTechnicalInfo(const QString& text)
             continue;
 
         const bool audioLabel = line.contains(QRegularExpression(
-            QStringLiteral(R"(^\s*(?:Audio|Аудио|Звук|Sound|Audio\s*#?\d*|Аудиодорожк\w*|Дорожк\w*|Перевод|Translation|Voice)\s*[:：-])"),
+            QStringLiteral(R"(^\s*(?:Audio|Аудио|Звук|Sound)\s*#?\d*\s*[:：-]|^\s*(?:Аудиодорожк\w*|Дорожк\w*|Перевод|Translation|Voice)\s*#?\d*\s*[:：-])"),
             QRegularExpression::CaseInsensitiveOption));
         if (audioLabel)
             appendUnique(audioDetails, line);
