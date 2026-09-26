@@ -206,6 +206,28 @@ QJsonObject extractTechnicalInfo(const QString& text)
             appendUnique(languages, pair.second);
     }
 
+    // French scene/release naming carries useful audio-language information
+    // even when a tracker page has no MediaInfo block.
+    const bool hasVf2 = text.contains(QRegularExpression(
+        QStringLiteral(R"(\b(?:VF2|FR2)\b)"), QRegularExpression::CaseInsensitiveOption));
+    const bool hasVff = text.contains(QRegularExpression(
+        QStringLiteral(R"(\b(?:VFF|TRUEFRENCH)\b)"), QRegularExpression::CaseInsensitiveOption));
+    const bool hasVfq = text.contains(QRegularExpression(
+        QStringLiteral(R"(\bVFQ\b)"), QRegularExpression::CaseInsensitiveOption));
+    const bool hasMulti = text.contains(QRegularExpression(
+        QStringLiteral(R"(\bMULTI\b)"), QRegularExpression::CaseInsensitiveOption));
+
+    if (hasVf2) {
+        appendUnique(languages, QStringLiteral("French (VF2: VFF + VFQ)"));
+    } else {
+        if (hasVff)
+            appendUnique(languages, QStringLiteral("French (VFF)"));
+        if (hasVfq)
+            appendUnique(languages, QStringLiteral("French (VFQ)"));
+    }
+    if (hasMulti)
+        appendUnique(languages, QStringLiteral("MULTi (multiple audio languages)"));
+
     QStringList audioDetails;
     QStringList subtitleDetails;
     const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
@@ -233,6 +255,28 @@ QJsonObject extractTechnicalInfo(const QString& text)
             if (colon >= 0)
                 appendUnique(languages, line.mid(colon + 1).trimmed());
         }
+    }
+
+    // When no tracker MediaInfo lines are available, preserve what the exact
+    // release name itself states instead of showing only "1080p".
+    if (audioDetails.isEmpty()) {
+        QStringList releaseAudio;
+        if (!audioCodecs.isEmpty())
+            releaseAudio << audioCodecs.join(QStringLiteral(" + "));
+        if (!channels.isEmpty())
+            releaseAudio << channels.join(QStringLiteral(" / "));
+        if (!releaseAudio.isEmpty())
+            appendUnique(audioDetails, QStringLiteral("Audio (release name): ") + releaseAudio.join(QStringLiteral(", ")));
+        if (hasVf2)
+            appendUnique(audioDetails, QStringLiteral("Audio tag: VF2 = French VFF + VFQ"));
+        else {
+            if (hasVff)
+                appendUnique(audioDetails, QStringLiteral("Audio tag: VFF (French-France dub)"));
+            if (hasVfq)
+                appendUnique(audioDetails, QStringLiteral("Audio tag: VFQ (French-Quebec dub)"));
+        }
+        if (hasMulti)
+            appendUnique(audioDetails, QStringLiteral("Audio tag: MULTi (multiple audio languages)"));
     }
 
     if (!audioDetails.isEmpty())
