@@ -1,6 +1,7 @@
 #ifndef TORRENTDETAILSPANEL_H
 #define TORRENTDETAILSPANEL_H
 
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -155,7 +156,7 @@ private:
     QLabel* descriptionLabel_; // Description text (expandable)
     QPushButton* descriptionToggle_; // "Show more / Show less" button
     QWidget* trackerLinksWidget_; // Container for tracker link buttons
-    QHBoxLayout* trackerLinksLayout_; // Layout for tracker link buttons
+    QGridLayout* trackerLinksLayout_; // Two-column wrapping layout for source links
     bool descriptionExpanded_ = false;
     QString fullDescription_; // Full description text
     QNetworkAccessManager* posterNetworkManager_;
