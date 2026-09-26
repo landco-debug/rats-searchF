@@ -30,6 +30,7 @@
 #include "format.h"
 #include "net/crawler.h"
 #include "net/p2p_transport.h"
+#include "net/rutor_search_client.h"
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
 #include "services/database_sync_service.h"
@@ -790,46 +791,99 @@ void MainWindow::connectServiceSignals()
 
 void MainWindow::connectPeerSignals()
 {
+    // Strict source-first search results. Nothing reaches the table until the
+    // Rutor client has re-verified the concrete detail page against the exact
+    // info-hash and passed the release-completeness rule.
+    if (auto* source = app_->rutorSearch()) {
+        connect(source, &rats::net::RutorSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& incoming) {
+                if (query != currentSearchQuery_)
+                    return;
+                if (!incoming.info.value(QStringLiteral("sourceVerified")).toBool(false)
+                    || !incoming.info.value(QStringLiteral("strictComplete")).toBool(false)
+                    || incoming.info.value(QStringLiteral("sourceUrl")).toString().isEmpty()) {
+                    return;
+                }
+
+                Torrent torrent = incoming;
+                if (app_->indexing()) {
+                    const auto inserted = app_->indexing()->insert(incoming);
+                    if (!inserted.success)
+                        return;
+                    torrent = inserted.torrent;
+                }
+
+                // Apply the existing UI filters after classification/persistence.
+                const SearchFilters filters = currentSearchFilters();
+                if ((filters.sizeMin > 0 || filters.sizeMax > 0) && torrent.size <= 0)
+                    return;
+                if (filters.sizeMin > 0 && torrent.size < filters.sizeMin)
+                    return;
+                if (filters.sizeMax > 0 && torrent.size > filters.sizeMax)
+                    return;
+
+                if ((filters.filesMin > 0 || filters.filesMax > 0) && torrent.files <= 0)
+                    return;
+                if (filters.filesMin > 0 && torrent.files < filters.filesMin)
+                    return;
+                if (filters.filesMax > 0 && torrent.files > filters.filesMax)
+                    return;
+
+                const QString wantedType = typeComboBox->currentData().toString();
+                if (!wantedType.isEmpty()
+                    && rats::domain::toString(torrent.contentType).compare(
+                           wantedType, Qt::CaseInsensitive)
+                        != 0) {
+                    return;
+                }
+                if (safeSearchCheckBox->isChecked()
+                    && torrent.contentCategory == rats::domain::ContentCategory::XXX) {
+                    return;
+                }
+
+                SearchHit hit;
+                hit.torrent = torrent;
+                searchResultModel->addResult(hit);
+                showStatusMessage(
+                    tr("✅ Verified Rutor releases: %1")
+                        .arg(searchResultModel->resultCount()),
+                    1500);
+            });
+
+        connect(source, &rats::net::RutorSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                if (query != currentSearchQuery_)
+                    return;
+
+                const int visible = searchResultModel->resultCount();
+                if (!error.isEmpty() && visible == 0) {
+                    showStatusMessage(tr("⚠️ %1").arg(error), 5000);
+                    return;
+                }
+
+                showStatusMessage(
+                    tr("✅ Verified: %1 · hidden incomplete/unverified: %2")
+                        .arg(visible)
+                        .arg(rejected),
+                    5000);
+                Q_UNUSED(accepted);
+            });
+    }
+
+    // Peer single-torrent replies are still useful for an already selected
+    // verified result (for example to obtain its file list). Peer SEARCH replies
+    // are intentionally not connected to the Search Results model anymore.
     if (!app_->peerApi())
         return;
     auto* peerApi = app_->peerApi();
 
-    // Remote torrent search hits stream into the search-results model.
-    connect(peerApi, &rats::peer::PeerApi::remoteSearchResults, this,
-        [this](const QString& /*query*/, const QJsonArray& torrents) {
-            if (currentSearchQuery_.isEmpty())
-                return;
-            for (const QJsonValue& val : torrents) {
-                SearchHit hit = codec::searchHitFromJson(val.toObject());
-                if (hit.torrent.isValid())
-                    searchResultModel->addResult(hit);
-            }
-        });
-
-    // Remote file-search hits.
-    connect(peerApi, &rats::peer::PeerApi::remoteFileSearchResults, this,
-        [this](const QString& /*query*/, const QJsonArray& torrents) {
-            if (currentSearchQuery_.isEmpty())
-                return;
-            for (const QJsonValue& val : torrents) {
-                SearchHit hit = codec::searchHitFromJson(val.toObject());
-                hit.fromFileMatch = true;
-                if (hit.torrent.isValid())
-                    searchResultModel->addFileResult(hit);
-            }
-        });
-
-    // A single-torrent reply from a peer: populate the bottom files panel if it
-    // matches the torrent currently on screen.
     connect(peerApi, &rats::peer::PeerApi::remoteTorrentReceived, this,
         [this](const QString& hash, const QJsonObject& data) {
             if (!filesWidget || hash.isEmpty())
                 return;
             if (detailsPanel && detailsPanel->currentHash() != hash)
                 return;
-            // Parse through the shared codec so the file list is read from the
-            // canonical "files_list" key (with legacy "filesList" fallback), not
-            // the "files" count.
+
             const rats::domain::Torrent t = codec::torrentFromJson(data);
             if (!t.fileList.isEmpty()) {
                 filesWidget->setFiles(hash, t.name, t.fileList);
@@ -1002,114 +1056,30 @@ void MainWindow::resetSearchFilters()
 
 void MainWindow::performSearch(const QString& query)
 {
-    if (query.isEmpty())
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty())
         return;
 
-    currentSearchQuery_ = query;
-    // Remember what the user searched for (a no-op while history is disabled).
+    currentSearchQuery_ = trimmed;
     if (app_->searchHistory())
-        app_->searchHistory()->add(query);
-    qInfo() << "Search started:" << query.left(50) << (query.length() > 50 ? "..." : "");
-    showStatusMessage(tr("🔍 Searching..."), 2000);
+        app_->searchHistory()->add(trimmed);
 
-    tabWidget->setCurrentIndex(0); // switch to Search Results
-
-    // Map the sort combo selection onto the request.
-    const QString sortData = sortComboBox->currentData().toString();
-    QString sort = "seeders";
-    if (sortData.startsWith("seeders"))
-        sort = "seeders";
-    else if (sortData.startsWith("size"))
-        sort = "size";
-    else if (sortData.startsWith("added"))
-        sort = "added";
-    else if (sortData.startsWith("name"))
-        sort = "name";
-
-    SearchService::Request req;
-    req.query = query;
-    req.limit = 50;
-    req.sort = sort;
-    req.descending = sortData.endsWith("desc");
-    req.safeSearch = safeSearchCheckBox->isChecked();
-    req.contentType = typeComboBox->currentData().toString();
-
-    const SearchFilters filters = currentSearchFilters();
-    req.sizeMin = filters.sizeMin;
-    req.sizeMax = filters.sizeMax;
-    req.filesMin = filters.filesMin;
-    req.filesMax = filters.filesMax;
-
+    qInfo() << "Strict Rutor search started:" << trimmed.left(80);
+    tabWidget->setCurrentIndex(0);
     searchResultModel->clearResults();
+    showStatusMessage(tr("🔍 Searching exact Rutor releases…"), 0);
 
-    // Local torrent search (synchronous).
-    QVector<SearchHit> hits;
-    if (app_->search())
-        hits = app_->search()->searchTorrents(req);
-    searchResultModel->setResults(hits);
-    showStatusMessage(tr("✅ Found %n torrent(s)", nullptr, static_cast<int>(hits.size())), 3000);
-
-    // Local file search — merged in as file-match results.
-    if (app_->search()) {
-        QVector<SearchHit> fileHits = app_->search()->searchFiles(req);
-        if (!fileHits.isEmpty()) {
-            searchResultModel->addFileResults(fileHits);
-            showStatusMessage(
-                tr("✅ Found %1 total results (incl. file matches)").arg(searchResultModel->resultCount()), 3000);
-        }
+    auto* source = app_->rutorSearch();
+    if (!source) {
+        showStatusMessage(
+            tr("⚠️ Exact-source Rutor search is unavailable in this build."), 5000);
+        return;
     }
 
-    // Ask connected peers as well; their answers stream back via peerApi signals.
-    if (app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
-        QJsonObject msg;
-        msg["query"] = query;
-        msg["text"] = query;
-        msg["limit"] = 50;
-        msg["orderBy"] = sort;
-        msg["orderDesc"] = req.descending;
-        msg["safeSearch"] = req.safeSearch;
-        if (!req.contentType.isEmpty())
-            msg["type"] = req.contentType;
-        // Ranges travel in the same {min,max} shape the REST router takes. An
-        // unset bound is left out entirely rather than sent as 0, so a peer that
-        // does read them cannot mistake "any" for "at least nothing".
-        if (filters.sizeMin > 0 || filters.sizeMax > 0) {
-            QJsonObject size;
-            if (filters.sizeMin > 0)
-                size["min"] = filters.sizeMin;
-            if (filters.sizeMax > 0)
-                size["max"] = filters.sizeMax;
-            msg["size"] = size;
-        }
-        if (filters.filesMin > 0 || filters.filesMax > 0) {
-            QJsonObject files;
-            if (filters.filesMin > 0)
-                files["min"] = filters.filesMin;
-            if (filters.filesMax > 0)
-                files["max"] = filters.filesMax;
-            msg["files"] = files;
-        }
-        app_->transport()->broadcastMessage("searchTorrent", msg);
-        app_->transport()->broadcastMessage("searchFiles", msg);
-    }
-
-    // DHT fallback: an info-hash query (bare hash OR a magnet link) that isn't
-    // indexed locally — pull the metadata from the DHT and add it as a result.
-    const QString dhtHash = SearchService::extractInfoHash(query);
-    if (hits.isEmpty() && !dhtHash.isEmpty() && app_->api()) {
-        app_->api()->call(
-            "torrent.get", QJsonObject { { "hash", dhtHash }, { "files", true } }, [this, query](const Result& result) {
-                if (!result.ok() || currentSearchQuery_ != query)
-                    return;
-                Torrent t = codec::torrentFromJson(result.data().toObject());
-                if (t.isValid()) {
-                    SearchHit hit;
-                    hit.torrent = t;
-                    searchResultModel->addResult(hit);
-                    showStatusMessage(tr("✅ Found torrent via DHT"), 3000);
-                }
-            });
-    }
+    // This is deliberately the ONLY discovery path for the Search Results tab.
+    // Local-index, remote P2P search and DHT-only hits cannot enter the table:
+    // they do not prove a concrete human-facing release page.
+    source->search(trimmed, 50, sortComboBox->currentData().toString());
 }
 
 void MainWindow::updateStatusBar()

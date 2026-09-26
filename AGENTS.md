@@ -114,3 +114,29 @@ Stage 3 verification before starting this stage:
 Next stage:
 - switch only the Search tab to `RutorSearchClient` results and persist accepted releases through `IndexingService`;
 - do not mix local/P2P/DHT-only rows into that search result set.
+
+
+### Stage 5 — Search tab switched to strict Rutor-only discovery
+
+Commit message: `feat: show only verified Rutor releases in search`.
+
+Stage 4 verification before starting this stage:
+- macOS ARM (Apple Silicon): Build success, Run tests success;
+- the live-Manticore authoritative-metadata test passed.
+
+User-visible behavior changed here:
+- `MainWindow::performSearch()` now starts only `RutorSearchClient`;
+- local-index search, remote P2P search and DHT-only fallback no longer feed the Search Results table;
+- remote peer search signals are no longer connected to the Search Results model;
+- a row is accepted defensively only when `sourceVerified=true`, `strictComplete=true`, and exact `sourceUrl` are present;
+- accepted Rutor releases are persisted through `IndexingService`, so exact provenance can be shared/reused by the existing database/P2P infrastructure;
+- existing size/type/safe/file filters are applied after classification; when a requested bound cannot be proven (for example file-count is unknown), the row is hidden rather than guessed;
+- peer single-torrent replies remain available only for an already selected verified row, e.g. to obtain its file list.
+
+Important invariant:
+- Search Results must never contain a torrent merely because its title/hash was found in the old local/P2P/DHT index.
+- Fewer results are expected and intentional.
+
+Next stage:
+- make Torrent Details render the verified Rutor source URL and structured quality/video/audio/subtitle facts directly from the stored exact-source snapshot;
+- ensure it does not launch post-hoc fallbacks for a verified-source row.
