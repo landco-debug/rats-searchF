@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSet>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -23,6 +24,18 @@ QNetworkRequest metadataRequest(const QUrl& url)
     request.setHeader(QNetworkRequest::UserAgentHeader,
         QStringLiteral("RatsSearch/2 (metadata resolver; +https://github.com/librats/rats-search)"));
     request.setRawHeader("Accept", "application/json");
+    request.setTransferTimeout(kMetadataTimeoutMs);
+    return request;
+}
+
+QNetworkRequest htmlRequest(const QUrl& url)
+{
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+        QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/153.0 Safari/537.36"));
+    request.setRawHeader("Accept", "text/html,application/xhtml+xml");
+    request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
     request.setTransferTimeout(kMetadataTimeoutMs);
     return request;
 }
@@ -67,6 +80,179 @@ QString RichMetadataResolver::normalizedTitle(const QString& value)
     return result.trimmed();
 }
 
+QString RichMetadataResolver::releaseSearchQuery(
+    const QString& torrentName, const QVector<rats::domain::File>& files)
+{
+    QString query = torrentName;
+    query.replace(QRegularExpression(QStringLiteral("[._]+")), QStringLiteral(" "));
+    query.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    query = query.trimmed();
+
+    // Many DHT names omit the release group while the actual video filename
+    // carries it (e.g. DoMiNo, HD-Films, YTS). Add the largest file's basename
+    // when it contributes words that are not already present.
+    const rats::domain::File* largest = nullptr;
+    for (const auto& file : files) {
+        if (!largest || file.size > largest->size)
+            largest = &file;
+    }
+    if (largest && !largest->path.trimmed().isEmpty()) {
+        QString fileName = largest->path;
+        fileName.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        const int slash = fileName.lastIndexOf(QLatin1Char('/'));
+        if (slash >= 0)
+            fileName = fileName.mid(slash + 1);
+        fileName.remove(QRegularExpression(QStringLiteral(R"(\.[A-Za-z0-9]{2,5}$)")));
+        fileName.replace(QRegularExpression(QStringLiteral("[._]+")), QStringLiteral(" "));
+        fileName.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+        fileName = fileName.trimmed();
+
+        const QString normQuery = normalizedTitle(query);
+        const QStringList tokens = normalizedTitle(fileName).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        QStringList extra;
+        for (const QString& token : tokens) {
+            if (token.size() < 3 || normQuery.contains(token, Qt::CaseInsensitive))
+                continue;
+            bool numericYear = false;
+            token.toInt(&numericYear);
+            if (numericYear && token.size() == 4)
+                continue;
+            extra << token;
+            if (extra.size() >= 4)
+                break;
+        }
+        if (!extra.isEmpty())
+            query += QStringLiteral(" ") + extra.join(QLatin1Char(' '));
+    }
+
+    if (query.size() > 150)
+        query = query.left(150);
+    return query.trimmed();
+}
+
+qint64 RichMetadataResolver::parseHumanSize(const QString& text)
+{
+    static const QRegularExpression re(
+        QStringLiteral(R"((\d+(?:[\.,]\d+)?)\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB)\b)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = re.match(text);
+    if (!match.hasMatch())
+        return 0;
+
+    QString number = match.captured(1);
+    number.replace(QLatin1Char(','), QLatin1Char('.'));
+    bool ok = false;
+    const double value = number.toDouble(&ok);
+    if (!ok)
+        return 0;
+
+    const QString unit = match.captured(2).toUpper();
+    qint64 multiplier = 1;
+    if (unit.startsWith(QStringLiteral("K")))
+        multiplier = 1024LL;
+    else if (unit.startsWith(QStringLiteral("M")))
+        multiplier = 1024LL * 1024LL;
+    else if (unit.startsWith(QStringLiteral("G")))
+        multiplier = 1024LL * 1024LL * 1024LL;
+    else if (unit.startsWith(QStringLiteral("T")))
+        multiplier = 1024LL * 1024LL * 1024LL * 1024LL;
+    return static_cast<qint64>(value * static_cast<double>(multiplier));
+}
+
+QString RichMetadataResolver::stripHtml(QString html)
+{
+    html.replace(QRegularExpression(QStringLiteral(R"(<\s*br\s*/?\s*>)"),
+                     QRegularExpression::CaseInsensitiveOption),
+        QStringLiteral("\n"));
+    html.replace(QRegularExpression(QStringLiteral(R"(</\s*(?:p|div|li|tr|td|th|h[1-6])\s*>)"),
+                     QRegularExpression::CaseInsensitiveOption),
+        QStringLiteral("\n"));
+    html.remove(QRegularExpression(QStringLiteral(R"(<script\b[^>]*>[\s\S]*?</script>)"),
+        QRegularExpression::CaseInsensitiveOption));
+    html.remove(QRegularExpression(QStringLiteral(R"(<style\b[^>]*>[\s\S]*?</style>)"),
+        QRegularExpression::CaseInsensitiveOption));
+    html.remove(QRegularExpression(QStringLiteral(R"(<[^>]+>)")));
+    html.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    html.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    html.replace(QStringLiteral("&quot;"), QStringLiteral("""));
+    html.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    html.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    html.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    html.replace(QRegularExpression(QStringLiteral("[ \\t]+")), QStringLiteral(" "));
+    html.replace(QRegularExpression(QStringLiteral("\\n[ \\t]*\\n(?:[ \\t]*\\n)+")), QStringLiteral("\n\n"));
+    return html.trimmed();
+}
+
+int RichMetadataResolver::releaseCandidateScore(const QString& torrentName,
+    const QVector<rats::domain::File>& files, qint64 totalSize,
+    const QString& candidateTitle, qint64 candidateSize, bool exactHash)
+{
+    if (candidateTitle.trimmed().isEmpty())
+        return -1000;
+    if (exactHash)
+        return 5000;
+
+    QString wanted = normalizedTitle(torrentName);
+    for (const auto& file : files)
+        wanted += QLatin1Char(' ') + normalizedTitle(file.path);
+    const QString candidate = normalizedTitle(candidateTitle);
+
+    QSet<QString> wantedTokens;
+    for (const QString& token : wanted.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        if (token.size() >= 3)
+            wantedTokens.insert(token);
+    }
+    QSet<QString> candidateTokens;
+    for (const QString& token : candidate.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        if (token.size() >= 3)
+            candidateTokens.insert(token);
+    }
+
+    int common = 0;
+    for (const QString& token : candidateTokens) {
+        if (wantedTokens.contains(token))
+            ++common;
+    }
+
+    int score = 0;
+    if (!candidateTokens.isEmpty())
+        score += (common * 140) / candidateTokens.size();
+
+    const QString cleanWanted = normalizedTitle(metadata::cleanMediaTitle(torrentName));
+    if (!cleanWanted.isEmpty() && candidate.contains(cleanWanted))
+        score += 70;
+
+    static const QStringList releaseMarkers = {
+        QStringLiteral("2160p"), QStringLiteral("1080p"), QStringLiteral("720p"),
+        QStringLiteral("hdrip"), QStringLiteral("bdrip"), QStringLiteral("bluray"),
+        QStringLiteral("remux"), QStringLiteral("web"), QStringLiteral("webdl"),
+        QStringLiteral("hdtv"), QStringLiteral("avc"), QStringLiteral("hevc"),
+        QStringLiteral("h264"), QStringLiteral("h265"), QStringLiteral("x264"),
+        QStringLiteral("x265"), QStringLiteral("10bit"), QStringLiteral("60fps"),
+        QStringLiteral("domino"), QStringLiteral("hd-films"), QStringLiteral("yts")
+    };
+    for (const QString& marker : releaseMarkers) {
+        if (wanted.contains(marker) && candidate.contains(marker))
+            score += 18;
+        else if (wanted.contains(marker) != candidate.contains(marker))
+            score -= 8;
+    }
+
+    if (totalSize > 0 && candidateSize > 0) {
+        const double diff = qAbs(static_cast<double>(candidateSize - totalSize)) / static_cast<double>(totalSize);
+        if (diff <= 0.006)
+            score += 220;
+        else if (diff <= 0.015)
+            score += 150;
+        else if (diff <= 0.04)
+            score += 45;
+        else
+            score -= 180;
+    }
+
+    return score;
+}
+
 int RichMetadataResolver::candidateScore(const QString& torrentName, const QJsonObject& candidate)
 {
     const QString wantedName = normalizedTitle(metadata::cleanMediaTitle(torrentName));
@@ -103,19 +289,199 @@ int RichMetadataResolver::candidateScore(const QString& torrentName, const QJson
     return score;
 }
 
-void RichMetadataResolver::resolve(
-    const QString& infoHash, const QString& torrentName, rats::domain::ContentCategory category)
+void RichMetadataResolver::resolve(const QString& infoHash, const QString& torrentName, qint64 totalSize,
+    const QVector<rats::domain::File>& files, rats::domain::ContentCategory category)
 {
     const QString hash = infoHash.trimmed().toLower();
     if (hash.size() != 40 || torrentName.trimmed().isEmpty())
         return;
 
-    // Independent paths: an outage or a poor catalog match in one must not stop
-    // the others. Wikipedia is deliberately generic (movie/series level), while
-    // YTS/Torrentio/tracker pages can contribute release-specific data.
+    // The release-mirror lookup is deliberately independent from info-hash:
+    // mirrors often re-create the .torrent and therefore change the hash while
+    // preserving the exact release payload. We match full release fingerprint +
+    // total size, then read that page's human description.
+    requestRutorReleaseMatch(hash, torrentName, totalSize, files);
+
+    // Generic title metadata is supplemental only. It can add synopsis/poster,
+    // but never marks a release lookup complete by itself.
     requestYts(hash, torrentName);
     requestWikipedia(hash, torrentName);
     requestCinemeta(hash, torrentName, category);
+}
+
+void RichMetadataResolver::requestRutorReleaseMatch(const QString& hash, const QString& torrentName,
+    qint64 totalSize, const QVector<rats::domain::File>& files)
+{
+    const QStringList mirrors = {
+        QStringLiteral("https://new-rutor.org"),
+        QStringLiteral("https://r.rss.new-rutor.org"),
+        QStringLiteral("https://www55.new-rutor.org"),
+        QStringLiteral("https://aa.new-rutor.org"),
+        QStringLiteral("https://rutor.info")
+    };
+    requestRutorMirror(hash, torrentName, totalSize, files, mirrors, 0);
+}
+
+void RichMetadataResolver::requestRutorMirror(const QString& hash, const QString& torrentName, qint64 totalSize,
+    const QVector<rats::domain::File>& files, const QStringList& mirrors, int mirrorIndex)
+{
+    if (mirrorIndex >= mirrors.size())
+        return;
+
+    const QString query = releaseSearchQuery(torrentName, files);
+    if (query.size() < 3)
+        return;
+
+    const QString base = mirrors.at(mirrorIndex);
+    const QUrl url(base + QStringLiteral("/search/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(query)));
+
+    QNetworkReply* reply = networkManager_->get(htmlRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, hash, torrentName, totalSize, files, mirrors, mirrorIndex, base]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                requestRutorMirror(hash, torrentName, totalSize, files, mirrors, mirrorIndex + 1);
+                return;
+            }
+
+            const QString html = QString::fromUtf8(reply->readAll());
+            if (html.trimmed().isEmpty()) {
+                requestRutorMirror(hash, torrentName, totalSize, files, mirrors, mirrorIndex + 1);
+                return;
+            }
+
+            QString bestUrl;
+            QString bestTitle;
+            qint64 bestSize = 0;
+            int bestScore = -1000;
+
+            const QRegularExpression rowRe(
+                QStringLiteral(R"re(<tr[^>]*>(.*?)</tr>)re"),
+                QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+            QRegularExpressionMatchIterator rows = rowRe.globalMatch(html);
+            while (rows.hasNext()) {
+                const QString row = rows.next().captured(1);
+
+                const QRegularExpression linkRe(
+                    QStringLiteral(R"re(<a[^>]+href\s*=\s*["'](/torrent/\d+/[^"']*)["'][^>]*>(.*?)</a>)re"),
+                    QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+                const QRegularExpressionMatch link = linkRe.match(row);
+                if (!link.hasMatch())
+                    continue;
+
+                const QString title = stripHtml(link.captured(2));
+                if (title.isEmpty())
+                    continue;
+
+                const QString rowText = stripHtml(row);
+                const qint64 rowSize = parseHumanSize(rowText);
+
+                bool exactHash = false;
+                const QRegularExpression hashRe(
+                    QStringLiteral(R"(magnet:[^"'<>]*?xt=urn:btih:([A-Fa-f0-9]{40}))"),
+                    QRegularExpression::CaseInsensitiveOption);
+                const QRegularExpressionMatch hashMatch = hashRe.match(row);
+                if (hashMatch.hasMatch())
+                    exactHash = hashMatch.captured(1).compare(hash, Qt::CaseInsensitive) == 0;
+
+                const int score
+                    = releaseCandidateScore(torrentName, files, totalSize, title, rowSize, exactHash);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestTitle = title;
+                    bestSize = rowSize;
+                    bestUrl = base + link.captured(1);
+                }
+            }
+
+            // 260 requires either a near-identical size plus strong title/release
+            // overlap, or an exact info-hash. This intentionally rejects a
+            // generic movie title with the wrong encode.
+            if (!bestUrl.isEmpty() && bestScore >= 260) {
+                qInfo() << "RichMetadataResolver: release mirror candidate" << bestTitle.left(80)
+                        << "score" << bestScore;
+                requestRutorDetail(hash, bestUrl, bestTitle, torrentName, totalSize, bestSize);
+                return;
+            }
+
+            requestRutorMirror(hash, torrentName, totalSize, files, mirrors, mirrorIndex + 1);
+        });
+}
+
+void RichMetadataResolver::requestRutorDetail(const QString& hash, const QString& candidateUrl,
+    const QString& candidateTitle, const QString& torrentName, qint64 totalSize, qint64 candidateSize)
+{
+    QNetworkReply* reply = networkManager_->get(htmlRequest(QUrl(candidateUrl)));
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, hash, candidateUrl, candidateTitle, torrentName, totalSize, candidateSize]() {
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError)
+                return;
+
+            const QString html = QString::fromUtf8(reply->readAll());
+            if (html.trimmed().isEmpty())
+                return;
+
+            QString detailsHtml;
+            const QRegularExpression detailsRe(
+                QStringLiteral(R"re(<table[^>]*id\s*=\s*["']details["'][^>]*>(.*?)</table>)re"),
+                QRegularExpression::DotMatchesEverythingOption | QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch detailsMatch = detailsRe.match(html);
+            if (detailsMatch.hasMatch())
+                detailsHtml = detailsMatch.captured(1);
+            else
+                detailsHtml = html;
+
+            QString description = stripHtml(detailsHtml);
+            if (description.size() > 30000)
+                description = description.left(30000) + QStringLiteral("…");
+            if (description.size() < 80)
+                return;
+
+            QJsonObject patch;
+            patch[QStringLiteral("metadataSources")] = sourceArray(QStringLiteral("Rutor exact release"));
+            patch[QStringLiteral("description")] = description;
+            patch[QStringLiteral("rutorUrl")] = candidateUrl;
+            patch[QStringLiteral("releaseReferenceUrl")] = candidateUrl;
+            patch[QStringLiteral("releaseReferenceTitle")] = candidateTitle;
+            patch[QStringLiteral("releaseMatchMethod")] = QStringLiteral("release fingerprint + total size");
+
+            const QJsonObject tech
+                = metadata::extractTechnicalInfo(candidateTitle + QLatin1Char('\n') + description);
+            if (!tech.isEmpty())
+                patch[QStringLiteral("technicalInfo")] = tech;
+
+            QString releaseLine = candidateTitle;
+            if (candidateSize > 0 && totalSize > 0) {
+                const double pct = qAbs(static_cast<double>(candidateSize - totalSize))
+                    / static_cast<double>(totalSize) * 100.0;
+                releaseLine += QStringLiteral("\nMatched size: %1% difference").arg(pct, 0, 'f', 2);
+            }
+            patch[QStringLiteral("releaseDetails")] = releaseLine;
+
+            // Poster from the exact release page, if present.
+            const QRegularExpression imgRe(
+                QStringLiteral(R"re(<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>)re"),
+                QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch img = imgRe.match(detailsHtml);
+            if (img.hasMatch()) {
+                QString poster = img.captured(1).trimmed();
+                if (poster.startsWith(QStringLiteral("//")))
+                    poster.prepend(QStringLiteral("https:"));
+                else if (poster.startsWith(QLatin1Char('/'))) {
+                    const QUrl base(candidateUrl);
+                    poster = base.scheme() + QStringLiteral("://") + base.host() + poster;
+                }
+                if (poster.startsWith(QStringLiteral("http")))
+                    patch[QStringLiteral("poster")] = poster;
+            }
+
+            qInfo() << "RichMetadataResolver: exact release description resolved from mirror for"
+                    << hash.left(12) << candidateTitle.left(80);
+            emit metadataFound(hash, patch);
+            Q_UNUSED(torrentName);
+        });
 }
 
 void RichMetadataResolver::requestWikipedia(const QString& hash, const QString& torrentName)
