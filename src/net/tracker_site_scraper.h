@@ -78,6 +78,11 @@ signals:
     // listener is responsible for merging them into the stored torrent.
     void scraped(const QString& infoHash, const QJsonObject& info);
 
+    // Terminal signal for every accepted lookup, including "nothing found".
+    // This keeps front-ends from waiting forever when every tracker times out or
+    // simply has no matching torrent.
+    void scrapeFinished(const QString& infoHash, bool found);
+
 private:
     // Register a hash's pending scrape and launch its strategies. Assumes a
     // concurrency slot has already been claimed by scrape()/processQueue().
