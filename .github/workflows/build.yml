@@ -497,6 +497,20 @@ jobs:
           echo "Copied Manticore binaries:"
           ls -la "$BUNDLE_DIR/"
 
+      - name: Sign and verify macOS app bundle
+        run: |
+          APP="build/bin/RatsSearch.app"
+
+          # macdeployqt runs during the CMake build, but Manticore binaries are
+          # copied into Contents/MacOS afterwards. That mutates the bundle after
+          # Qt has finished deployment/signing and Gatekeeper reports it as
+          # "damaged". Re-sign the final, complete bundle after every mutation.
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+
+          echo "Final bundle signature:"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 |             egrep 'Identifier=|Format=|CodeDirectory|Signature=|TeamIdentifier=|Sealed Resources=' || true
+
       - name: Get version
         id: version
         run: |
