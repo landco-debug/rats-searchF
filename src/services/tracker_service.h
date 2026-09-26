@@ -42,6 +42,10 @@ public:
     void checkInfo(const QString& hash, const QString& name);
 
 signals:
+    // Fresh tracker-site information is surfaced directly as well as persisted.
+    // This matters for remote-only search hits which do not yet have a local row.
+    void infoAvailable(const QString& hash, const QJsonObject& info);
+
     // Completes every website-info lookup, including a clean "not found".
     // Consumers can start secondary resolution paths without guessing a timeout.
     void infoCheckFinished(const QString& hash, bool found);
