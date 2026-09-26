@@ -220,12 +220,14 @@ void TorrentDetailsPanel::setupUi()
     trackerInfoSourceLabel_ = new QLabel();
     trackerInfoSourceLabel_->setObjectName("hintLabel");
     trackerInfoSourceLabel_->setWordWrap(true);
+    trackerInfoSourceLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     trackerInfoSourceLabel_->hide();
     trackerInfoLayout->addWidget(trackerInfoSourceLabel_);
 
     technicalInfoLabel_ = new QLabel();
     technicalInfoLabel_->setObjectName("descriptionLabel");
     technicalInfoLabel_->setWordWrap(true);
+    technicalInfoLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     technicalInfoLabel_->setTextFormat(Qt::PlainText);
     technicalInfoLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     technicalInfoLabel_->hide();
@@ -234,6 +236,7 @@ void TorrentDetailsPanel::setupUi()
     trackerUrlsLabel_ = new QLabel();
     trackerUrlsLabel_->setObjectName("hintLabel");
     trackerUrlsLabel_->setWordWrap(true);
+    trackerUrlsLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     trackerUrlsLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     trackerUrlsLabel_->hide();
     trackerInfoLayout->addWidget(trackerUrlsLabel_);
@@ -241,6 +244,7 @@ void TorrentDetailsPanel::setupUi()
     retryInfoButton_ = new QPushButton(tr("Retry information lookup"));
     retryInfoButton_->setObjectName("secondaryButton");
     retryInfoButton_->setCursor(Qt::PointingHandCursor);
+    retryInfoButton_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     retryInfoButton_->hide();
     connect(retryInfoButton_, &QPushButton::clicked, this, [this]() {
         trackerLookupFinished_ = false;
@@ -266,6 +270,7 @@ void TorrentDetailsPanel::setupUi()
     descriptionLabel_ = new QLabel();
     descriptionLabel_->setObjectName("descriptionLabel");
     descriptionLabel_->setWordWrap(true);
+    descriptionLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     descriptionLabel_->setTextFormat(Qt::PlainText);
     descriptionLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     descriptionLabel_->hide();
@@ -293,12 +298,17 @@ void TorrentDetailsPanel::setupUi()
     });
     trackerInfoLayout->addWidget(descriptionToggle_);
 
-    // Tracker links
+    // Source/reference links. A single QHBoxLayout made five long buttons set a
+    // huge minimum width for the whole details panel. Use a compact two-column
+    // grid so the panel stays narrow on macOS and the result list keeps most of
+    // the window width.
     trackerLinksWidget_ = new QWidget();
-    trackerLinksLayout_ = new QHBoxLayout(trackerLinksWidget_);
+    trackerLinksLayout_ = new QGridLayout(trackerLinksWidget_);
     trackerLinksLayout_->setContentsMargins(0, 4, 0, 0);
-    trackerLinksLayout_->setSpacing(8);
-    trackerLinksLayout_->addStretch();
+    trackerLinksLayout_->setHorizontalSpacing(6);
+    trackerLinksLayout_->setVerticalSpacing(6);
+    trackerLinksLayout_->setColumnStretch(0, 0);
+    trackerLinksLayout_->setColumnStretch(1, 0);
     trackerLinksWidget_->hide();
     trackerInfoLayout->addWidget(trackerLinksWidget_);
 
@@ -647,7 +657,7 @@ void TorrentDetailsPanel::clear()
     lastInfoError_.clear();
 
     // Remove old tracker link buttons
-    while (trackerLinksLayout_->count() > 1) { // keep the stretch
+    while (trackerLinksLayout_->count() > 0) {
         QLayoutItem* item = trackerLinksLayout_->takeAt(0);
         if (item->widget()) {
             delete item->widget();
@@ -1703,7 +1713,7 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
 
 void TorrentDetailsPanel::rebuildMetadataLinks(const QJsonObject& info)
 {
-    while (trackerLinksLayout_->count() > 1) {
+    while (trackerLinksLayout_->count() > 0) {
         QLayoutItem* item = trackerLinksLayout_->takeAt(0);
         if (item->widget())
             delete item->widget();
@@ -1722,8 +1732,11 @@ void TorrentDetailsPanel::rebuildMetadataLinks(const QJsonObject& info)
         button->setObjectName("trackerLinkButton");
         button->setCursor(Qt::PointingHandCursor);
         button->setToolTip(trimmed);
+        button->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        button->setMaximumWidth(210);
         connect(button, &QPushButton::clicked, this, [trimmed]() { QDesktopServices::openUrl(QUrl(trimmed)); });
-        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, button);
+        const int index = trackerLinksLayout_->count();
+        trackerLinksLayout_->addWidget(button, index / 2, index % 2, Qt::AlignLeft);
         hasLinks = true;
     };
 
