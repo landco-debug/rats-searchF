@@ -1102,7 +1102,8 @@ void TorrentDetailsPanel::requestRichMetadataEnrichment(const QString& hash)
         return;
 
     richMetadataRequested_ = true;
-    richMetadataResolver_->resolve(hash, currentTorrent_.name, currentTorrent_.contentCategory);
+    richMetadataResolver_->resolve(
+        hash, currentTorrent_.name, currentTorrent_.size, currentTorrent_.fileList, currentTorrent_.contentCategory);
 }
 
 void TorrentDetailsPanel::requestTrackerRefresh()
