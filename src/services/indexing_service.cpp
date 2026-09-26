@@ -5,6 +5,7 @@
 #include "services/filter_policy.h"
 
 #include <QDebug>
+#include <QJsonArray>
 #include <QSet>
 #include <QStringList>
 
