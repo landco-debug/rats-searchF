@@ -3,6 +3,8 @@
 
 #include "domain/content.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 
