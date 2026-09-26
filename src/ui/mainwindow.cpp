@@ -319,14 +319,19 @@ void MainWindow::setupUi()
 
     mainSplitter->addWidget(tabWidget);
 
-    // Right side - Details panel
+    // Right side - Details panel. Keep it a true side panel rather than letting
+    // long metadata/link text force it to consume half of a wide macOS window.
     detailsPanel = new TorrentDetailsPanel(this);
-    detailsPanel->setMinimumWidth(280);
+    detailsPanel->setMinimumWidth(320);
+    detailsPanel->setMaximumWidth(500);
     detailsPanel->setMinimumHeight(150);
+    detailsPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     detailsPanel->hide();
 
     mainSplitter->addWidget(detailsPanel);
-    mainSplitter->setSizes({ 900, 350 });
+    mainSplitter->setStretchFactor(0, 1);
+    mainSplitter->setStretchFactor(1, 0);
+    mainSplitter->setSizes({ 1000, 420 });
 
     verticalSplitter->addWidget(mainSplitter);
 
