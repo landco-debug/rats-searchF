@@ -161,14 +161,14 @@ QJsonObject extractTechnicalInfo(const QString& text)
 
     QStringList audioCodecs;
     const QList<QPair<QString, QString>> audioPatterns = {
-        { QStringLiteral(R"(DTS[- .]?HD\s*MA)"), QStringLiteral("DTS-HD MA") },
+        { QStringLiteral(R"(DTS[- .]?HD[- .]?MA)"), QStringLiteral("DTS-HD MA") },
         { QStringLiteral(R"(DTS[: -]?X)"), QStringLiteral("DTS:X") },
         { QStringLiteral(R"(TrueHD)"), QStringLiteral("TrueHD") },
         { QStringLiteral(R"(Atmos)"), QStringLiteral("Dolby Atmos") },
         { QStringLiteral(R"(E[- .]?AC[- .]?3|DDP(?:lus)?)"), QStringLiteral("E-AC-3 / DDP") },
         { QStringLiteral(R"(AC[- .]?3|Dolby\s*Digital(?!\s*Plus))"), QStringLiteral("AC-3 / Dolby Digital") },
         { QStringLiteral(R"(\bDTS\b)"), QStringLiteral("DTS") },
-        { QStringLiteral(R"(\bAAC\b)"), QStringLiteral("AAC") },
+        { QStringLiteral(R"(\bAAC(?=\b|[ ._-]?\d))"), QStringLiteral("AAC") },
         { QStringLiteral(R"(\bFLAC\b)"), QStringLiteral("FLAC") },
         { QStringLiteral(R"(\bOpus\b)"), QStringLiteral("Opus") },
         { QStringLiteral(R"(\bMP3\b)"), QStringLiteral("MP3") },
@@ -190,8 +190,8 @@ QJsonObject extractTechnicalInfo(const QString& text)
 
     QStringList languages;
     const QList<QPair<QString, QString>> languagePatterns = {
-        { QStringLiteral(R"(\bRussian\b|\bРусск(?:ий|ая|ое|ие)\b)"), QStringLiteral("Russian") },
-        { QStringLiteral(R"(\bEnglish\b|\bАнглийск(?:ий|ая|ое|ие)\b)"), QStringLiteral("English") },
+        { QStringLiteral(R"(\bRussian\b|\bRus\b|\bRUS\b|\bРусск(?:ий|ая|ое|ие)\b)"), QStringLiteral("Russian") },
+        { QStringLiteral(R"(\bEnglish\b|\bEng\b|\bENG\b|\bАнглийск(?:ий|ая|ое|ие)\b)"), QStringLiteral("English") },
         { QStringLiteral(R"(\bUkrainian\b|\bУкраинск(?:ий|ая|ое|ие)\b)"), QStringLiteral("Ukrainian") },
         { QStringLiteral(R"(\bJapanese\b|\bЯпонск(?:ий|ая|ое|ие)\b)"), QStringLiteral("Japanese") },
         { QStringLiteral(R"(\bSpanish\b|\bИспанск(?:ий|ая|ое|ие)\b)"), QStringLiteral("Spanish") },
