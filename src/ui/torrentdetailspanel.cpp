@@ -1749,46 +1749,52 @@ void TorrentDetailsPanel::rebuildMetadataLinks(const QJsonObject& info)
     if (nyaaId > 0)
         addLink(QStringLiteral("Nyaa"), QStringLiteral("https://nyaa.si/view/%1").arg(nyaaId));
 
-    addLink(QStringLiteral("Rutor"), info.value(QStringLiteral("rutorUrl")).toString());
-    addLink(QStringLiteral("1337x"), info.value(QStringLiteral("x1337Url")).toString());
-    addLink(QStringLiteral("YTS"), info.value(QStringLiteral("ytsUrl")).toString());
-    addLink(QStringLiteral("Wikipedia"), info.value(QStringLiteral("wikipediaUrl")).toString());
+    // Only concrete release pages are presented as release references. Hash
+    // links that merely return "not found" are worse than no link.
+    addLink(QStringLiteral("Rutor release"), info.value(QStringLiteral("rutorUrl")).toString());
+    addLink(QStringLiteral("1337x release"), info.value(QStringLiteral("x1337Url")).toString());
 
-    const QString imdbId = info.value(QStringLiteral("imdbId")).toString().trimmed();
-    if (imdbId.startsWith(QStringLiteral("tt")))
-        addLink(QStringLiteral("IMDb"), QStringLiteral("https://www.imdb.com/title/%1/").arg(imdbId));
+    // Generic movie links are supplemental and appear only after we already
+    // have enough exact-release information.
+    if (hasReleaseSpecificInfo(info)) {
+        addLink(QStringLiteral("YTS"), info.value(QStringLiteral("ytsUrl")).toString());
+        addLink(QStringLiteral("Wikipedia"), info.value(QStringLiteral("wikipediaUrl")).toString());
 
-    addLink(QStringLiteral("Magnetz"), info.value(QStringLiteral("magnetzUrl")).toString());
+        const QString imdbId = info.value(QStringLiteral("imdbId")).toString().trimmed();
+        if (imdbId.startsWith(QStringLiteral("tt")))
+            addLink(QStringLiteral("IMDb"), QStringLiteral("https://www.imdb.com/title/%1/").arg(imdbId));
+    }
 
-    // Guarantee a useful escape hatch for every selected torrent. If the exact
-    // release could not be enriched, offer searches on sites that normally have
-    // full release cards (description, video/audio, translation, subtitles).
-    if (!hasReleaseSpecificInfo(info)) {
-        QString query = rats::net::metadata::cleanMediaTitle(currentTorrent_.name);
-        const int year = rats::net::metadata::extractYear(currentTorrent_.name);
-        if (year > 0)
-            query += QStringLiteral(" ") + QString::number(year);
-        if (query.trimmed().isEmpty())
-            query = currentTorrent_.name.trimmed();
-
-        if (!currentHash_.isEmpty()) {
-            addLink(tr("RuTracker exact hash"),
-                QStringLiteral("https://rutracker.org/forum/viewtopic.php?h=%1").arg(currentHash_));
-            addLink(tr("1337x exact hash"),
-                QStringLiteral("https://1337x.to/srch?search=%1")
-                    .arg(QString::fromLatin1(QUrl::toPercentEncoding(currentHash_))));
+    // Last resort: search by the complete release identity, not by movie title.
+    // Include the largest filename because it often carries the release group
+    // omitted from the torrent's display name.
+    if (!hasReleaseSpecificInfo(info) && info.value(QStringLiteral("releaseReferenceUrl")).toString().isEmpty()) {
+        QString query = currentTorrent_.name.trimmed();
+        const rats::domain::File* largest = nullptr;
+        for (const auto& file : currentTorrent_.fileList) {
+            if (!largest || file.size > largest->size)
+                largest = &file;
         }
+        if (largest && !largest->path.trimmed().isEmpty()) {
+            QString fileName = largest->path;
+            fileName.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            const int slash = fileName.lastIndexOf(QLatin1Char('/'));
+            if (slash >= 0)
+                fileName = fileName.mid(slash + 1);
+            fileName.remove(QRegularExpression(QStringLiteral(R"(\.[A-Za-z0-9]{2,5}$)")));
+            if (!query.contains(fileName, Qt::CaseInsensitive))
+                query += QStringLiteral(" ") + fileName;
+        }
+        query.replace(QRegularExpression(QStringLiteral("[._]+")), QStringLiteral(" "));
+        query.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+        query = query.trimmed();
 
         if (!query.isEmpty()) {
-            const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query));
-            addLink(tr("Find description on Rutor"), QStringLiteral("https://rutor.info/search/%1").arg(encoded));
-            addLink(tr("Find description on RuTracker"),
+            const QString encoded = QString::fromLatin1(QUrl::toPercentEncoding(query.left(180)));
+            addLink(tr("Search this exact release on Rutor"),
+                QStringLiteral("https://new-rutor.org/search/%1").arg(encoded));
+            addLink(tr("Search this exact release on RuTracker"),
                 QStringLiteral("https://rutracker.org/forum/tracker.php?nm=%1").arg(encoded));
-
-            const bool cyrillic = query.contains(QRegularExpression(QStringLiteral("[\\x{0400}-\\x{04FF}]")));
-            const QString wikiHost = cyrillic ? QStringLiteral("ru.wikipedia.org") : QStringLiteral("en.wikipedia.org");
-            addLink(tr("Find movie info"),
-                QStringLiteral("https://%1/w/index.php?search=%2").arg(wikiHost, encoded));
         }
     }
 
