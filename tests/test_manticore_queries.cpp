@@ -52,6 +52,7 @@ private slots:
     void testSearchByName();
     void testSearchByHash();
     void testUpdateTrackerCounts();
+    void testMergeInfoSignals();
     void testStatistics();
     void testRecent();
     void testTop();
@@ -248,13 +249,36 @@ void TestManticoreQueries::testSearchByHash()
 void TestManticoreQueries::testUpdateTrackerCounts()
 {
     const Torrent t = makeTorrent(1, "x");
+    QSignalSpy updatedSpy(repo_, &TorrentRepository::torrentUpdated);
+
     QVERIFY(repo_->updateTrackerCounts(t.hash, 111, 22, 3));
+    QCOMPARE(updatedSpy.count(), 1);
+    QCOMPARE(updatedSpy.takeFirst().at(0).toString(), t.hash);
 
     const auto got = repo_->get(t.hash);
     QVERIFY(got.has_value());
     QCOMPARE(got->seeders, 111);
     QCOMPARE(got->leechers, 22);
     QCOMPARE(got->completed, 3);
+}
+
+void TestManticoreQueries::testMergeInfoSignals()
+{
+    const Torrent t = makeTorrent(1, "x");
+    QSignalSpy updatedSpy(repo_, &TorrentRepository::torrentUpdated);
+
+    const QJsonObject info {
+        { QStringLiteral("description"), QStringLiteral("fallback metadata") },
+        { QStringLiteral("metadataSource"), QStringLiteral("test") },
+    };
+    QVERIFY(repo_->mergeInfo(t.hash, info));
+    QCOMPARE(updatedSpy.count(), 1);
+    QCOMPARE(updatedSpy.takeFirst().at(0).toString(), t.hash);
+
+    const auto got = repo_->get(t.hash);
+    QVERIFY(got.has_value());
+    QCOMPARE(got->info.value(QStringLiteral("description")).toString(), QStringLiteral("fallback metadata"));
+    QCOMPARE(got->info.value(QStringLiteral("metadataSource")).toString(), QStringLiteral("test"));
 }
 
 void TestManticoreQueries::testStatistics()
