@@ -485,7 +485,25 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
 {
     currentTorrent_ = torrent;
     currentHash_ = torrent.hash;
-    infoResolved_ = hasUserFacingInfo(torrent.info);
+
+    // Search rows intentionally stay small and may omit file paths. Pull the
+    // selected torrent's local full record when available: release filenames
+    // often encode more useful exact information than any generic movie API
+    // (x265, 10bit, Rus/Eng, AAC5.1, REMUX, etc.).
+    if (app_ && app_->torrents()) {
+        if (auto stored = app_->torrents()->get(currentHash_, true)) {
+            if (currentTorrent_.fileList.isEmpty())
+                currentTorrent_.fileList = stored->fileList;
+            for (auto it = stored->info.constBegin(); it != stored->info.constEnd(); ++it) {
+                if (!currentTorrent_.info.contains(it.key()) || currentTorrent_.info.value(it.key()).isNull()
+                    || currentTorrent_.info.value(it.key()).isUndefined()) {
+                    currentTorrent_.info.insert(it.key(), it.value());
+                }
+            }
+        }
+    }
+
+    infoResolved_ = hasUserFacingInfo(currentTorrent_.info);
     trackerLookupFinished_ = false;
     richMetadataRequested_ = false;
     peerFallbackRequested_ = false;
@@ -546,11 +564,16 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
         resetDownloadState();
     }
 
-    // Show cached human-facing metadata immediately. Low-level tracker URLs or
-    // DHT bookkeeping alone are intentionally not treated as "information about
-    // the movie/release".
-    if (hasUserFacingInfo(torrent.info)) {
-        updateTrackerInfoDisplay(torrent.info);
+    // Derive exact-but-limited facts from the selected torrent name and file
+    // paths before any network request. This makes obvious details visible even
+    // when all tracker sites are unavailable.
+    enrichFromTorrentIdentity();
+
+    // Show cached/derived human-facing metadata immediately. Low-level tracker
+    // URLs or DHT bookkeeping alone are intentionally not treated as useful
+    // movie/release information.
+    if (hasUserFacingInfo(currentTorrent_.info)) {
+        updateTrackerInfoDisplay(currentTorrent_.info);
     } else {
         trackerInfoWidget_->hide();
         trackerInfoLoadingLabel_->hide();
@@ -888,20 +911,42 @@ bool TorrentDetailsPanel::hasUserFacingInfo(const QJsonObject& info) const
 
 bool TorrentDetailsPanel::hasReleaseSpecificInfo(const QJsonObject& info) const
 {
-    if (!info.value(QStringLiteral("releaseDetails")).toString().trimmed().isEmpty())
+    const QString description = info.value(QStringLiteral("description")).toString().trimmed();
+    const QString synopsis = info.value(QStringLiteral("synopsis")).toString().trimmed();
+    const QString releaseDetails = info.value(QStringLiteral("releaseDetails")).toString().trimmed();
+
+    // A full tracker post is already enough: it is exactly the kind of
+    // user-facing release card the legacy application tried to display.
+    if (rats::net::metadata::descriptionRichness(description) >= 1400)
+        return true;
+    if (releaseDetails.size() >= 220)
         return true;
 
     const QJsonObject tech = info.value(QStringLiteral("technicalInfo")).toObject();
+    auto present = [&tech](const QString& key) {
+        const QJsonValue value = tech.value(key);
+        return (value.isString() && !value.toString().trimmed().isEmpty())
+            || (value.isArray() && !value.toArray().isEmpty());
+    };
+
+    int technicalGroups = 0;
     for (const QString& key : { QStringLiteral("resolution"), QStringLiteral("source"), QStringLiteral("videoCodec"),
              QStringLiteral("bitDepth"), QStringLiteral("hdr"), QStringLiteral("audioCodecs"),
              QStringLiteral("audioChannels"), QStringLiteral("audioDetails"), QStringLiteral("languages"),
              QStringLiteral("subtitles") }) {
-        const QJsonValue value = tech.value(key);
-        if ((value.isString() && !value.toString().trimmed().isEmpty()) || (value.isArray() && !value.toArray().isEmpty()))
-            return true;
+        if (present(key))
+            ++technicalGroups;
     }
 
-    return rats::net::metadata::descriptionRichness(info.value(QStringLiteral("description")).toString()) >= 1400;
+    const bool hasAudioOrLanguage = present(QStringLiteral("audioCodecs")) || present(QStringLiteral("audioChannels"))
+        || present(QStringLiteral("audioDetails")) || present(QStringLiteral("languages"));
+    const bool hasNarrative = description.size() >= 120 || synopsis.size() >= 120;
+
+    // "1080p" or "Movie · 2160p" by itself is *not* a successful result.
+    // Consider the card complete only when generic narrative plus several exact
+    // release facts are available, or when an exact audio-track description was
+    // obtained.
+    return present(QStringLiteral("audioDetails")) || (hasNarrative && technicalGroups >= 3 && hasAudioOrLanguage);
 }
 
 bool TorrentDetailsPanel::hasUsefulTrackerInfo(const QJsonObject& info) const
@@ -1108,7 +1153,7 @@ void TorrentDetailsPanel::requestPeerInfoFallback(const QString& hash)
         trackerInfoLoadingLabel_->show();
     }
 
-    const int sent = app_->peerApi() ? app_->peerApi()->requestTorrentFromPeers(hash, false) : 0;
+    const int sent = app_->peerApi() ? app_->peerApi()->requestTorrentFromPeers(hash, true) : 0;
     if (sent == 0)
         lastInfoError_ = tr("No connected peer could be queried.");
 }
@@ -1349,12 +1394,14 @@ void TorrentDetailsPanel::onRemoteTorrentReceived(const QString& hash, const QJs
         return;
 
     const rats::domain::Torrent peerTorrent = rats::domain::codec::torrentFromJson(data);
-    if (peerTorrent.info.isEmpty())
-        return;
+    if (!peerTorrent.fileList.isEmpty())
+        currentTorrent_.fileList = peerTorrent.fileList;
 
     // PeerApi/indexing owns persistence. The panel only merges the cached rich
-    // description immediately.
-    mergeInfoPatch(peerTorrent.info, false);
+    // description immediately, then mines exact filename/path tags.
+    if (!peerTorrent.info.isEmpty())
+        mergeInfoPatch(peerTorrent.info, false);
+    enrichFromTorrentIdentity();
 }
 
 void TorrentDetailsPanel::onRichMetadataFound(const QString& hash, const QJsonObject& patch)
