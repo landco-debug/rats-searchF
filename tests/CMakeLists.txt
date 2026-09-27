@@ -42,6 +42,7 @@ add_rats_test(test_database_snapshot)
 add_rats_test(test_database_transfer_resume)
 add_rats_test(test_voting_record)
 add_rats_test(test_rutor_source)
+add_rats_test(test_rutracker_ru_source)
 
 # The single-instance guard lives in src/bootstrap (executable-only, not in
 # ratscore), so its source is compiled straight into the test.
@@ -124,6 +125,7 @@ add_custom_target(check
             test_database_dump
             test_voting_record
             test_rutor_source
+            test_rutracker_ru_source
             test_single_instance
             test_theme
     COMMENT "Running all tests..."

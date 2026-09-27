@@ -231,3 +231,27 @@ Implemented:
 
 Next stage:
 - validate these three fixes in the macOS ARM artifact; after user acceptance, add additional torrent sources using the same exact-source/strict-completeness contract rather than reintroducing post-hoc title matching.
+
+
+### Stage 10 — strict public RuTracker.RU parser core
+
+Commit message: `feat: add strict RuTracker.RU provenance parser`.
+
+Why this source:
+- current public RuTracker.RU search rows expose a concrete `viewtopic.php?t=<id>` link and magnet/info-hash in the same result row;
+- that satisfies the source-first identity requirement without post-hoc title matching.
+
+Implemented:
+- new `src/net/rutracker_ru_source.{h,cpp}`;
+- public search URL construction with the same sort dimensions used by the main UI;
+- result-row parsing for exact topic URL, info-hash, byte size, seeders and leechers;
+- detail-page identity check requires the same info-hash;
+- first-post description extraction follows RuTracker's `post_body` structure;
+- strict fields: quality, video, explicit audio tracks and optional subtitles/poster;
+- strict completeness contract mirrors Rutor: verified concrete page + substantial exact-release description + quality + video + at least one audio track;
+- unit tests cover provenance, swarm counters, exact-hash acceptance and mismatch rejection.
+
+Not wired into the GUI yet.
+
+Next stage:
+- add the asynchronous RuTracker.RU transport and Application ownership, then aggregate Rutor + RuTracker.RU without mixing old local/P2P/DHT-only search results.
