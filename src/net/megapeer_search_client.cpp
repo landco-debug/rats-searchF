@@ -1,6 +1,7 @@
 #include "net/megapeer_search_client.h"
 
 #include "domain/content_classifier.h"
+#include "net/cloudflare_clearance.h"
 #include "net/megapeer_source.h"
 #include "net/source_parse_utils.h"
 #include "net/torrent_engine.h"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <QDir>
 #include <QNetworkAccessManager>
+#include <QNetworkCookieJar>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTemporaryFile>
@@ -15,12 +17,15 @@
 namespace rats::net {
 namespace {
 
-QNetworkRequest requestFor(const QUrl& url, bool torrent = false)
+QNetworkRequest requestFor(
+    const QUrl& url, const QString& userAgent, bool torrent = false)
 {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader,
-        QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 RatsSearch/2"));
+        userAgent.isEmpty()
+            ? QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                             "AppleWebKit/537.36 RatsSearch/2")
+            : userAgent);
     request.setRawHeader("Accept", torrent
         ? "application/x-bittorrent,application/octet-stream,*/*;q=0.5"
         : "text/html,application/xhtml+xml");
@@ -32,12 +37,48 @@ QNetworkRequest requestFor(const QUrl& url, bool torrent = false)
     return request;
 }
 
+bool replyLooksCloudflare(
+    QNetworkReply* reply, int status, const QByteArray& body)
+{
+    if (looksLikeCloudflareChallenge(status, body))
+        return true;
+    return reply && !reply->rawHeader("cf-ray").isEmpty()
+        && (status == 403 || status == 429 || status == 503);
+}
+
 } // namespace
 
 MegaPeerSearchClient::MegaPeerSearchClient(QObject* parent)
     : QObject(parent)
     , networkManager_(new QNetworkAccessManager(this))
+    , clearance_(new CloudflareClearance(this))
 {
+    connect(clearance_, &CloudflareClearance::solved, this,
+        [this](const QUrl& url, const QString& userAgent,
+            const QList<QNetworkCookie>& cookies) {
+            if (clearanceGeneration_ != generation_ || finishedEmitted_)
+                return;
+
+            if (!userAgent.isEmpty())
+                userAgent_ = userAgent;
+            if (QNetworkCookieJar* jar = networkManager_->cookieJar())
+                jar->setCookiesFromUrl(cookies, url);
+
+            const int generation = clearanceGeneration_;
+            clearanceGeneration_ = -1;
+            fetchSearchPage(generation);
+        });
+
+    connect(clearance_, &CloudflareClearance::failed, this,
+        [this](const QUrl&, const QString& error) {
+            if (clearanceGeneration_ != generation_ || finishedEmitted_)
+                return;
+            const int generation = clearanceGeneration_;
+            clearanceGeneration_ = -1;
+            finishNow(generation,
+                tr("MegaPeer is currently protected by Cloudflare and the "
+                   "system-browser clearance failed: %1").arg(error));
+        });
 }
 
 MegaPeerSearchClient::~MegaPeerSearchClient()
@@ -59,6 +100,10 @@ void MegaPeerSearchClient::cancel()
     networkFailures_ = 0;
     lastNetworkError_.clear();
     searchResolved_ = false;
+    clearanceRetried_ = false;
+    clearanceGeneration_ = -1;
+    if (clearance_)
+        clearance_->cancel();
 
     const QList<QNetworkReply*> outstanding = replies_.values();
     replies_.clear();
@@ -79,6 +124,7 @@ void MegaPeerSearchClient::search(
     currentContentType_ = contentType.trimmed().toLower();
     requestedLimit_ = qBound(1, limit, 50);
     finishedEmitted_ = false;
+    clearanceRetried_ = false;
 
     const int generation = generation_;
     if (currentQuery_.isEmpty()) {
@@ -88,26 +134,62 @@ void MegaPeerSearchClient::search(
     fetchSearchPage(generation);
 }
 
+void MegaPeerSearchClient::requestCloudflareClearance(
+    const QUrl& url, int generation)
+{
+    if (generation != generation_ || finishedEmitted_)
+        return;
+    if (!clearance_ || !clearance_->isSupported()) {
+        finishNow(generation,
+            tr("MegaPeer returned a Cloudflare challenge. This build has no "
+               "system-browser clearance backend on the current platform."));
+        return;
+    }
+
+    clearanceRetried_ = true;
+    clearanceGeneration_ = generation;
+    clearance_->solve(url, 65000);
+}
+
 void MegaPeerSearchClient::fetchSearchPage(int generation)
 {
     if (generation != generation_ || finishedEmitted_)
         return;
 
     const QUrl url = MegaPeerSource::searchUrl(currentQuery_, currentSortKey_);
-    QNetworkReply* reply = networkManager_->get(requestFor(url));
+    QNetworkReply* reply
+        = networkManager_->get(requestFor(url, userAgent_));
     replies_.insert(reply);
     connect(reply, &QNetworkReply::finished, this,
-        [this, reply, generation]() {
+        [this, reply, generation, url]() {
             replies_.remove(reply);
             const auto error = reply->error();
             const QString errorText = reply->errorString();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const QByteArray body = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, body);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
+
+            if (cloudflare) {
+                if (!clearanceRetried_) {
+                    QUrl origin = url;
+                    origin.setPath(QStringLiteral("/"));
+                    origin.setQuery(QString());
+                    requestCloudflareClearance(origin, generation);
+                    return;
+                }
+                finishNow(generation,
+                    tr("MegaPeer still returns a Cloudflare challenge after "
+                       "system-browser clearance."));
+                return;
+            }
+
             if (error != QNetworkReply::NoError) {
                 finishNow(generation,
                     tr("MegaPeer search request failed: %1").arg(errorText));
@@ -152,8 +234,6 @@ void MegaPeerSearchClient::processQueue(int generation)
         && accepted_ < requestedLimit_) {
         Job job = queue_.dequeue();
         ++active_;
-        // Detail first: current MegaPeer pages expose the exact magnet, so the
-        // normal path is one page request instead of .torrent + page.
         fetchDetail(std::move(job), generation);
     }
     if (accepted_ >= requestedLimit_)
@@ -163,20 +243,33 @@ void MegaPeerSearchClient::processQueue(int generation)
 
 void MegaPeerSearchClient::fetchDetail(Job job, int generation)
 {
-    QNetworkReply* reply = networkManager_->get(requestFor(job.detailUrl));
+    QNetworkReply* reply
+        = networkManager_->get(requestFor(job.detailUrl, userAgent_));
     replies_.insert(reply);
     connect(reply, &QNetworkReply::finished, this,
         [this, reply, generation, job = std::move(job)]() mutable {
             replies_.remove(reply);
             const auto error = reply->error();
             const QString errorText = reply->errorString();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const QByteArray body = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, body);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
+
+            if (cloudflare) {
+                recordNetworkFailure(QStringLiteral("detail"),
+                    QStringLiteral("Cloudflare challenge returned after clearance"));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
 
             if (error != QNetworkReply::NoError) {
                 recordNetworkFailure(QStringLiteral("detail"), errorText);
@@ -195,28 +288,38 @@ void MegaPeerSearchClient::fetchDetail(Job job, int generation)
                 return;
             }
 
-            // The exact page may occasionally omit a magnet. Only then pay for
-            // the paired .torrent; reuse the already-fetched detail body after
-            // parsing it instead of issuing a second detail request.
             fetchTorrentFallback(std::move(job), generation);
         });
 }
 
 void MegaPeerSearchClient::fetchTorrentFallback(Job job, int generation)
 {
-    QNetworkReply* reply = networkManager_->get(requestFor(job.torrentUrl, true));
+    QNetworkReply* reply
+        = networkManager_->get(requestFor(job.torrentUrl, userAgent_, true));
     replies_.insert(reply);
     connect(reply, &QNetworkReply::finished, this,
         [this, reply, generation, job = std::move(job)]() mutable {
             replies_.remove(reply);
             const auto error = reply->error();
             const QString errorText = reply->errorString();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray body = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, body);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
+
+            if (cloudflare) {
+                recordNetworkFailure(QStringLiteral("torrent fallback"),
+                    QStringLiteral("Cloudflare challenge returned after clearance"));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
 
             if (error != QNetworkReply::NoError) {
                 recordNetworkFailure(QStringLiteral("torrent fallback"), errorText);
