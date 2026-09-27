@@ -178,78 +178,6 @@ QJsonArray audioLines(const QString& description, bool audioRelease)
     return out;
 }
 
-const QSet<int>& audioForums()
-{
-    static const QSet<int> ids = {
-        730, 776, 777, 1156, 1158, 1233, 1159, 1315, 1223, 1635, 1637,
-        1643, 1636, 1639, 1640, 1177, 1642, 1427, 1641, 1561, 1598, 1599,
-        1600, 1601, 1200, 1552, 1565, 1554, 1553, 1567, 1566, 1713, 1556,
-        1588, 1580, 1581, 1582, 1583, 1584, 1585, 1586, 1587, 1602, 1590,
-        1591, 1592, 1593, 1594, 1595, 1596, 1597, 1626, 1627, 1628, 1610,
-        1611, 1457, 1613, 1614, 1203, 1615, 1616, 1617, 1618, 1205, 1619,
-        1620, 1206, 1575, 1576, 1577, 1630, 1631, 1633, 1540, 1604, 1562,
-        1185, 1183, 1664, 1665, 1666, 1667, 1668, 1670, 1746, 1669, 1740,
-        1679, 1680, 1681, 1682, 1683, 1684, 1685, 1686, 1687, 1688, 1689,
-        1690, 1691, 1692, 1693
-    };
-    return ids;
-}
-
-const QSet<int>& videoForums()
-{
-    static const QSet<int> ids = {
-        22, 941, 1666, 376, 106, 7, 187, 2090, 2221, 2091, 2092, 2093,
-        2200, 1950, 252, 2540, 934, 505, 212, 2459, 166, 124, 1543, 709,
-        1577, 511, 1493, 93, 905, 101, 100, 877, 1576, 2220, 2198, 2199,
-        313, 312, 311, 2100, 2101, 2102, 2103, 2104
-    };
-    return ids;
-}
-
-const QSet<int>& bookForums()
-{
-    static const QSet<int> ids = {
-        21, 2156, 765, 1101, 1581, 1580, 762, 760, 761, 726, 728, 757,
-        1314, 722, 727, 1021, 1020, 147
-    };
-    return ids;
-}
-
-const QSet<int>& gameForums()
-{
-    static const QSet<int> ids = {
-        60, 73, 61, 1234, 84, 82, 85, 78, 77, 76, 1538, 1539, 878
-    };
-    return ids;
-}
-
-const QSet<int>& softwareForums()
-{
-    static const QSet<int> ids = {
-        105, 1663, 1120, 706, 212, 210, 213, 215, 1395, 107, 1405, 1398,
-        193, 1518, 195, 341, 196, 969, 1523, 1505, 201, 1506, 1508, 1509,
-        1507, 108, 217, 218, 222, 1404, 1522, 1504, 220, 221, 219, 1511,
-        1512, 1513, 1514, 1515, 1516, 110, 966, 1500, 1501, 967, 965,
-        1499, 1502, 1503, 968, 1287, 1307, 1306, 1305, 1289, 1302, 1301,
-        1298, 1293, 1292, 1291, 1294, 1303, 1300, 1299, 1296, 1295
-    };
-    return ids;
-}
-
-domain::ContentType contentTypeForForum(int forumId)
-{
-    if (audioForums().contains(forumId))
-        return domain::ContentType::Audio;
-    if (videoForums().contains(forumId))
-        return domain::ContentType::Video;
-    if (bookForums().contains(forumId))
-        return domain::ContentType::Books;
-    if (gameForums().contains(forumId))
-        return domain::ContentType::Games;
-    if (softwareForums().contains(forumId))
-        return domain::ContentType::Software;
-    return domain::ContentType::Unknown;
-}
 
 } // namespace
 
@@ -335,8 +263,10 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
             R"re(<a\b[^>]*href\s*=\s*["']([^"']*dl\.php\?t=(\d+)[^"']*)["'][^>]*>)re"),
         QRegularExpression::CaseInsensitiveOption);
     const QRegularExpression forumRe(
-        QStringLiteral(R"re(href\s*=\s*["'][^"']*tracker\.php\?f=(\d+)[^"']*["'])re"),
-        QRegularExpression::CaseInsensitiveOption);
+        QStringLiteral(
+            R"re(<a\b[^>]*href\s*=\s*["'][^"']*tracker\.php\?f=(\d+)[^"']*["'][^>]*>(.*?)</a>)re"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
 
     QSet<int> seen;
     auto rows = rowRe.globalMatch(html);
@@ -391,8 +321,13 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
         const QRegularExpressionMatch forum = forumRe.match(row);
         if (forum.hasMatch()) {
             const int forumId = forum.captured(1).toInt();
+            const QString categoryText
+                = sourceparse::stripHtml(forum.captured(2)).trimmed();
             info[QStringLiteral("sourceForumId")] = forumId;
-            torrent.contentType = contentTypeForForum(forumId);
+            if (!categoryText.isEmpty())
+                info[QStringLiteral("sourceCategory")] = categoryText;
+            torrent.contentType
+                = sourceparse::contentTypeFromCategoryText(categoryText);
             if (torrent.contentType != domain::ContentType::Unknown) {
                 info[QStringLiteral("contentTypeEvidence")]
                     = QStringLiteral("source-category");
