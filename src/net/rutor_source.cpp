@@ -105,6 +105,28 @@ int firstInteger(const QString& text, const QString& pattern)
     return m.hasMatch() ? m.captured(1).toInt() : 0;
 }
 
+int spanCounter(const QString& row, const QString& className)
+{
+    // Rutor currently exposes swarm counters in span.green / span.red. Do not
+    // assume that the number is the first raw character after '>'; the site may
+    // wrap it in <b>, <a>, etc., and older mirrors also used unquoted class=.
+    const QString escapedClass = QRegularExpression::escape(className);
+    const QString pattern = QStringLiteral(
+        R"(<span\b[^>]*class\s*=\s*(?:"[^"]*\b%1\b[^"]*"|'[^']*\b%1\b[^']*'|[^\s>]*\b%1\b[^\s>]*)[^>]*>(.*?)</span>[^<]*)")
+                                .arg(escapedClass);
+    const QRegularExpression re(pattern,
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
+    const QRegularExpressionMatch match = re.match(row);
+    if (!match.hasMatch())
+        return 0;
+
+    const QString text = htmlToText(match.captured(1));
+    const QRegularExpression number(QStringLiteral(R"((\d+))"));
+    const QRegularExpressionMatch numberMatch = number.match(text);
+    return numberMatch.hasMatch() ? numberMatch.captured(1).toInt() : 0;
+}
+
 QString firstMatch(const QString& text, const QString& pattern)
 {
     const QRegularExpression re(pattern,
@@ -204,10 +226,8 @@ QVector<domain::Torrent> RutorSource::parseSearchPage(
         torrent.hash = hash;
         torrent.name = name;
         torrent.size = parseSize(htmlToText(row));
-        torrent.seeders = firstInteger(
-            row, QStringLiteral(R"(<span[^>]*class\s*=\s*["'][^"']*\bgreen\b[^"']*["'][^>]*>\s*(\d+))"));
-        torrent.leechers = firstInteger(
-            row, QStringLiteral(R"(<span[^>]*class\s*=\s*["'][^"']*\bred\b[^"']*["'][^>]*>\s*(\d+))"));
+        torrent.seeders = spanCounter(row, QStringLiteral("green"));
+        torrent.leechers = spanCounter(row, QStringLiteral("red"));
 
         QJsonObject info;
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");

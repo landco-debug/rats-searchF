@@ -38,8 +38,8 @@ void TestRutorSource::searchRowCarriesExactProvenance()
           <a href="/torrent/471557/police-academy">Police Academy BDRip-AVC 60 fps</a>
         </td>
         <td>3.63 GB</td>
-        <td><span class="green">42</span></td>
-        <td><span class="red">3</span></td>
+        <td><span class="green"><b>42</b></span></td>
+        <td><span class=red><a href="/peers">3</a></span></td>
       </tr></table>)";
 
     const QVector<Torrent> torrents = RutorSource::parseSearchPage(

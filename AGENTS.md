@@ -167,3 +167,23 @@ Invariant after this stage:
 
 Next stage:
 - build the macOS ARM artifact and manually verify the UI with the known Police Academy / Under Siege cases before considering merge to `master`.
+
+
+### Stage 7 — robust Rutor seeder/leecher counters
+
+Commit message: `fix: parse Rutor swarm counters robustly`.
+
+Observed on the Stage 6 macOS ARM build:
+- exact release metadata works, but every search result displayed `0` seeders and `0` leechers.
+
+Root cause:
+- the source-first parser looked for digits immediately after the opening `span.green` / `span.red` tag;
+- Rutor/mirrors may wrap the number in nested markup or use an unquoted `class=` attribute, so the row identity parsed correctly while the counter regex failed.
+
+Implemented:
+- parse the complete contents of `span.green` and `span.red`, strip nested HTML, then extract the integer;
+- accept quoted and unquoted class attributes;
+- unit test now covers a nested `<b>` seeder value and an unquoted/nested leecher value.
+
+Next stage:
+- fix clipped main/settings tab captions without changing search behavior.
