@@ -1,5 +1,6 @@
 #include "net/rutracker_ru_search_client.h"
 
+#include "net/cloudflare_clearance.h"
 #include "net/rutracker_ru_source.h"
 #include "net/source_parse_utils.h"
 
@@ -14,13 +15,29 @@
 namespace rats::net {
 namespace {
 
-QNetworkRequest requestFor(const QUrl& url)
+const QList<QUrl>& officialMirrors()
+{
+    // The user's current working browser session is on rutracker.net, and the
+    // current qBittorrent plugin lists .org + .net as official mirrors. Prefer
+    // .net first because .org has current 403/Cloudflare reports; retain .org
+    // and .nl as fallbacks for region-dependent reachability.
+    static const QList<QUrl> mirrors {
+        QUrl(QStringLiteral("https://rutracker.net")),
+        QUrl(QStringLiteral("https://rutracker.org")),
+        QUrl(QStringLiteral("https://rutracker.nl"))
+    };
+    return mirrors;
+}
+
+QNetworkRequest requestFor(const QUrl& url, const QString& userAgent)
 {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader,
-        QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/154 Safari/537.36"));
+        userAgent.isEmpty()
+            ? QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/154 Safari/537.36")
+            : userAgent);
     request.setRawHeader("Accept",
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
@@ -36,13 +53,71 @@ bool hasLoginForm(const QString& html)
         && html.contains(QStringLiteral("login_password"), Qt::CaseInsensitive);
 }
 
+bool replyLooksCloudflare(
+    QNetworkReply* reply, int status, const QByteArray& body)
+{
+    if (looksLikeCloudflareChallenge(status, body))
+        return true;
+    return reply && !reply->rawHeader("cf-ray").isEmpty()
+        && (status == 403 || status == 429 || status == 503);
+}
+
+QString mirrorLabel(const QUrl& base)
+{
+    return base.host().isEmpty() ? base.toString() : base.host();
+}
+
 } // namespace
 
 RuTrackerRuSearchClient::RuTrackerRuSearchClient(QObject* parent)
     : QObject(parent)
     , networkManager_(new QNetworkAccessManager(this))
+    , clearance_(new CloudflareClearance(this))
+    , currentBaseUrl_(officialMirrors().first())
 {
     resetCookieJar();
+
+    connect(clearance_, &CloudflareClearance::solved, this,
+        [this](const QUrl& url, const QString& userAgent,
+            const QList<QNetworkCookie>& cookies) {
+            if (clearanceGeneration_ != generation_ || finishedEmitted_)
+                return;
+
+            if (!userAgent.isEmpty())
+                userAgent_ = userAgent;
+            if (QNetworkCookieJar* jar = networkManager_->cookieJar())
+                jar->setCookiesFromUrl(cookies, url);
+
+            const int generation = clearanceGeneration_;
+            const ClearancePurpose purpose = clearancePurpose_;
+            clearanceGeneration_ = -1;
+            clearancePurpose_ = ClearancePurpose::None;
+
+            if (purpose == ClearancePurpose::Login)
+                authenticateCurrentMirror(generation);
+            else if (purpose == ClearancePurpose::Search)
+                fetchSearchPage(generation);
+        });
+
+    connect(clearance_, &CloudflareClearance::failed, this,
+        [this](const QUrl&, const QString& error) {
+            if (clearanceGeneration_ != generation_ || finishedEmitted_)
+                return;
+
+            const int generation = clearanceGeneration_;
+            const ClearancePurpose purpose = clearancePurpose_;
+            clearanceGeneration_ = -1;
+            clearancePurpose_ = ClearancePurpose::None;
+
+            if (purpose == ClearancePurpose::Login) {
+                tryNextMirror(generation,
+                    tr("Cloudflare clearance failed: %1").arg(error));
+            } else {
+                finishNow(generation,
+                    tr("RuTracker search is blocked by Cloudflare and the "
+                       "system-browser clearance failed: %1").arg(error));
+            }
+        });
 }
 
 RuTrackerRuSearchClient::~RuTrackerRuSearchClient()
@@ -69,6 +144,10 @@ void RuTrackerRuSearchClient::setCredentials(
     username_ = cleanUser;
     password_ = password;
     authenticated_ = false;
+    mirrorIndex_ = 0;
+    currentBaseUrl_ = officialMirrors().first();
+    userAgent_.clear();
+    mirrorErrors_.clear();
     resetCookieJar();
 }
 
@@ -89,7 +168,12 @@ void RuTrackerRuSearchClient::cancel()
     accepted_ = 0;
     rejected_ = 0;
     authRetried_ = false;
+    searchClearanceRetried_ = false;
     searchPageResolved_ = false;
+    clearanceGeneration_ = -1;
+    clearancePurpose_ = ClearancePurpose::None;
+    if (clearance_)
+        clearance_->cancel();
 
     const QList<QNetworkReply*> outstanding = replies_.values();
     replies_.clear();
@@ -113,6 +197,7 @@ void RuTrackerRuSearchClient::search(
     rejected_ = 0;
     activeDetails_ = 0;
     authRetried_ = false;
+    searchClearanceRetried_ = false;
     searchPageResolved_ = false;
     finishedEmitted_ = false;
 
@@ -145,8 +230,74 @@ void RuTrackerRuSearchClient::authenticate(int generation)
         return;
     }
 
-    const QUrl loginUrl(QStringLiteral("https://rutracker.org/forum/login.php"));
-    QNetworkRequest request = requestFor(loginUrl);
+    const QList<QUrl>& mirrors = officialMirrors();
+    if (mirrorIndex_ < 0 || mirrorIndex_ >= mirrors.size())
+        mirrorIndex_ = 0;
+    currentBaseUrl_ = mirrors.at(mirrorIndex_);
+    clearanceRetriedForMirror_ = false;
+    mirrorErrors_.clear();
+    resetCookieJar();
+    authenticateCurrentMirror(generation);
+}
+
+void RuTrackerRuSearchClient::requestCloudflareClearance(
+    const QUrl& url, int generation, ClearancePurpose purpose)
+{
+    if (generation != generation_ || finishedEmitted_)
+        return;
+    if (!clearance_ || !clearance_->isSupported()) {
+        if (purpose == ClearancePurpose::Login) {
+            tryNextMirror(generation,
+                tr("Cloudflare challenge; no system-browser clearance backend."));
+        } else {
+            finishNow(generation,
+                tr("RuTracker returned a Cloudflare challenge and this platform "
+                   "has no system-browser clearance backend."));
+        }
+        return;
+    }
+
+    clearanceGeneration_ = generation;
+    clearancePurpose_ = purpose;
+    clearance_->solve(url, 65000);
+}
+
+void RuTrackerRuSearchClient::tryNextMirror(
+    int generation, const QString& reason)
+{
+    if (generation != generation_ || finishedEmitted_)
+        return;
+
+    mirrorErrors_ << tr("%1: %2")
+        .arg(mirrorLabel(currentBaseUrl_), reason);
+
+    ++mirrorIndex_;
+    const QList<QUrl>& mirrors = officialMirrors();
+    if (mirrorIndex_ >= mirrors.size()) {
+        authenticated_ = false;
+        finishNow(generation,
+            tr("RuTracker authentication failed on all current official "
+               "mirrors. %1").arg(mirrorErrors_.join(QStringLiteral(" | "))));
+        return;
+    }
+
+    currentBaseUrl_ = mirrors.at(mirrorIndex_);
+    clearanceRetriedForMirror_ = false;
+    userAgent_.clear();
+    resetCookieJar();
+    authenticateCurrentMirror(generation);
+}
+
+void RuTrackerRuSearchClient::authenticateCurrentMirror(int generation)
+{
+    if (generation != generation_ || finishedEmitted_)
+        return;
+
+    QUrl loginUrl = currentBaseUrl_;
+    loginUrl.setPath(QStringLiteral("/forum/login.php"));
+    loginUrl.setQuery(QString());
+
+    QNetworkRequest request = requestFor(loginUrl, userAgent_);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
         QStringLiteral("application/x-www-form-urlencoded"));
     request.setRawHeader("Referer", loginUrl.toEncoded());
@@ -156,7 +307,9 @@ void RuTrackerRuSearchClient::authenticate(int generation)
     body += sourceparse::formEncodeWindows1251(username_);
     body += "&login_password=";
     body += sourceparse::formEncodeWindows1251(password_);
-    body += "&login=Login&redirect=index.php";
+    body += "&login=";
+    body += sourceparse::formEncodeWindows1251(QString::fromUtf8("Вход"));
+    body += "&redirect=index.php";
 
     QNetworkReply* reply = networkManager_->post(request, body);
     replies_.insert(reply);
@@ -166,17 +319,33 @@ void RuTrackerRuSearchClient::authenticate(int generation)
 
             const QNetworkReply::NetworkError error = reply->error();
             const QString errorText = reply->errorString();
-            const QByteArray raw = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray raw = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, raw);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
 
+            if (cloudflare) {
+                if (!clearanceRetriedForMirror_) {
+                    clearanceRetriedForMirror_ = true;
+                    QUrl origin = currentBaseUrl_;
+                    origin.setPath(QStringLiteral("/forum/login.php"));
+                    requestCloudflareClearance(
+                        origin, generation, ClearancePurpose::Login);
+                    return;
+                }
+                tryNextMirror(generation,
+                    tr("Cloudflare still blocks the login POST after clearance."));
+                return;
+            }
+
             if (error != QNetworkReply::NoError) {
-                authenticated_ = false;
-                finishNow(generation,
-                    tr("RuTracker login request failed: %1").arg(errorText));
+                tryNextMirror(generation,
+                    tr("login request failed: %1").arg(errorText));
                 return;
             }
 
@@ -197,15 +366,23 @@ void RuTrackerRuSearchClient::authenticate(int generation)
                 Qt::CaseInsensitive);
 
             if (!hasSessionCookie && !loggedInMarker) {
-                authenticated_ = false;
-                QString reason = tr("RuTracker authentication failed. Check the "
-                                    "login/password; the site may also require a "
-                                    "captcha or browser challenge.");
-                finishNow(generation, reason);
+                QString reason;
+                if (html.contains(QStringLiteral("captcha"), Qt::CaseInsensitive)
+                    || html.contains(QStringLiteral("cap_sid"), Qt::CaseInsensitive)) {
+                    reason = tr("site requested a captcha");
+                } else if (hasLoginForm(html)) {
+                    reason = tr("login form remained after POST");
+                } else {
+                    reason = tr("no authenticated session cookie was returned");
+                }
+                tryNextMirror(generation, reason);
                 return;
             }
 
             authenticated_ = true;
+            mirrorErrors_.clear();
+            qInfo() << "[RuTrackerRuSearchClient] authenticated via"
+                    << currentBaseUrl_.host();
             fetchSearchPage(generation);
         });
 }
@@ -216,27 +393,48 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
         return;
 
     const QUrl url = RuTrackerRuSource::searchUrl(
-        currentQuery_, currentSortKey_, currentContentType_);
-    QNetworkReply* reply = networkManager_->get(requestFor(url));
+        currentQuery_, currentSortKey_, currentContentType_, currentBaseUrl_);
+    QNetworkReply* reply
+        = networkManager_->get(requestFor(url, userAgent_));
     replies_.insert(reply);
 
     connect(reply, &QNetworkReply::finished, this,
-        [this, reply, generation]() {
+        [this, reply, generation, url]() {
             replies_.remove(reply);
 
             const QNetworkReply::NetworkError error = reply->error();
             const QString errorText = reply->errorString();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const QByteArray body = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, body);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
 
+            if (cloudflare) {
+                if (!searchClearanceRetried_) {
+                    searchClearanceRetried_ = true;
+                    QUrl origin = currentBaseUrl_;
+                    origin.setPath(QStringLiteral("/forum/tracker.php"));
+                    requestCloudflareClearance(
+                        origin, generation, ClearancePurpose::Search);
+                    return;
+                }
+                finishNow(generation,
+                    tr("RuTracker still returns a Cloudflare challenge after "
+                       "system-browser clearance on %1.")
+                        .arg(currentBaseUrl_.host()));
+                return;
+            }
+
             if (error != QNetworkReply::NoError) {
                 finishNow(generation,
-                    tr("RuTracker search request failed: %1").arg(errorText));
+                    tr("RuTracker search request failed on %1: %2")
+                        .arg(currentBaseUrl_.host(), errorText));
                 return;
             }
 
@@ -247,7 +445,9 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                 authenticated_ = false;
                 if (!authRetried_) {
                     authRetried_ = true;
-                    authenticate(generation);
+                    resetCookieJar();
+                    clearanceRetriedForMirror_ = false;
+                    authenticateCurrentMirror(generation);
                     return;
                 }
                 finishNow(generation,
@@ -264,7 +464,8 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
             if (candidates.isEmpty()) {
                 searchPageResolved_ = true;
                 finishNow(generation,
-                    tr("RuTracker returned no exact torrent rows for this query."));
+                    tr("RuTracker returned no exact torrent rows for this query "
+                       "on %1.").arg(currentBaseUrl_.host()));
                 return;
             }
 
@@ -314,7 +515,8 @@ void RuTrackerRuSearchClient::processQueue(int generation)
 void RuTrackerRuSearchClient::fetchDetail(
     DetailJob job, int generation)
 {
-    QNetworkReply* reply = networkManager_->get(requestFor(job.url));
+    QNetworkReply* reply
+        = networkManager_->get(requestFor(job.url, userAgent_));
     replies_.insert(reply);
 
     connect(reply, &QNetworkReply::finished, this,
@@ -322,16 +524,20 @@ void RuTrackerRuSearchClient::fetchDetail(
             replies_.remove(reply);
 
             const QNetworkReply::NetworkError error = reply->error();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const QByteArray body = reply->readAll();
+            const bool cloudflare
+                = replyLooksCloudflare(reply, status, body);
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
 
             bool accepted = false;
-            if (error == QNetworkReply::NoError
+            if (!cloudflare
+                && error == QNetworkReply::NoError
                 && RuTrackerRuSource::applyDetailPage(
                     job.torrent, body, finalUrl)
                 && RuTrackerRuSource::isStrictComplete(job.torrent)) {
