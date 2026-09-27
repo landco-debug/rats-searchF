@@ -92,21 +92,22 @@ int counterFromClass(const QString& row, const QString& className)
 
 QDateTime publishDateFromRow(const QString& row)
 {
-    const QVector<QString> cells = tableCells(row);
-    if (cells.size() < 10)
-        return {};
-
-    const QString cell = cells.at(9);
-    const QString tag = firstMatch(
-        QStringLiteral("<td>") + cell + QStringLiteral("</td>"),
-        QStringLiteral(R"((<td\b[^>]*data-ts_text\s*=\s*["']\d+["'][^>]*>))"));
-    qint64 seconds = dataTsValue(tag);
-    if (seconds <= 0) {
-        const QString raw = firstMatch(cell,
-            QStringLiteral(R"(data-ts_text\s*=\s*["'](\d+)["'])"));
-        seconds = raw.toLongLong();
+    const QRegularExpression tdRe(
+        QStringLiteral(R"(<td\b([^>]*)>(.*?)</td>)"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
+    auto cells = tdRe.globalMatch(row);
+    int index = 0;
+    while (cells.hasNext()) {
+        const QRegularExpressionMatch cell = cells.next();
+        if (index++ != 9)
+            continue;
+        const qint64 seconds = dataTsValue(cell.captured(1));
+        return seconds > 0
+            ? QDateTime::fromSecsSinceEpoch(seconds, Qt::UTC)
+            : QDateTime();
     }
-    return seconds > 0 ? QDateTime::fromSecsSinceEpoch(seconds, Qt::UTC) : QDateTime();
+    return {};
 }
 
 bool isRuTrackerHost(QString host)
