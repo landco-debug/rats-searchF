@@ -21,7 +21,8 @@ public:
     enum DataRole {
         ContentTypeRole = Qt::UserRole + 1, // domain::ContentType id
         MatchingPathsRole = Qt::UserRole + 2, // QStringList of highlighted file paths
-        RemoteRole = Qt::UserRole + 3 // true if the hit came from a peer, not the local index
+        RemoteRole = Qt::UserRole + 3, // true if the hit came from a peer, not the local index
+        SourceProviderRole = Qt::UserRole + 4 // exact-source id: rutor/rutracker-ru/megapeer/nnmclub
     };
 
     explicit SearchResultModel(QObject* parent = nullptr);

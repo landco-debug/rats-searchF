@@ -16,6 +16,9 @@ class TorrentItemDelegate : public QStyledItemDelegate {
 public:
     explicit TorrentItemDelegate(QObject* parent = nullptr);
 
+    void setShowSourceBadges(bool enabled) { showSourceBadges_ = enabled; }
+    bool showSourceBadges() const { return showSourceBadges_; }
+
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
     QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override;
 
@@ -33,6 +36,7 @@ private:
     static constexpr int FilePathRowHeight = 16;
     static constexpr int MaxVisiblePaths = 3;
     static constexpr int RemoteStripeWidth = 3; // left edge bar on rows a peer answered with
+    bool showSourceBadges_ = true;
 };
 
 #endif // TORRENTITEMDELEGATE_H

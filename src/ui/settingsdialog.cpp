@@ -6,6 +6,8 @@
 #include "autostartmanager.h"
 #include "common/logging.h"
 #include "rest/api_router.h"
+#include "net/rutracker_ru_search_client.h"
+#include "net/kinozal_search_client.h"
 #include <QApplication>
 
 #include <QApplication>
@@ -22,6 +24,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QStyle>
+#include <QTabBar>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(rats::app::Application* app, QWidget* parent)
@@ -50,6 +53,11 @@ void SettingsDialog::setupUi()
 
     // Tab widget
     tabWidget_ = new QTabWidget(this);
+    // Settings tabs use the same non-eliding policy as the main window: preserve
+    // the complete caption, fall back to native tab scrolling only when needed.
+    tabWidget_->tabBar()->setElideMode(Qt::ElideNone);
+    tabWidget_->tabBar()->setUsesScrollButtons(true);
+    tabWidget_->tabBar()->setExpanding(false);
     tabWidget_->addTab(createGeneralTab(), tr("⚙️ General"));
     tabWidget_->addTab(createNetworkTab(), tr("🌐 Network"));
     tabWidget_->addTab(createIndexerTab(), tr("🕷️ Indexer"));
@@ -205,15 +213,6 @@ QWidget* SettingsDialog::createGeneralTab()
 
     tabLayout->addWidget(searchGroup);
 
-    // --- Updates ---
-    QGroupBox* updatesGroup = new QGroupBox(tr("Updates"));
-    QFormLayout* updatesLayout = new QFormLayout(updatesGroup);
-
-    checkUpdatesCheck_ = new QCheckBox(tr("Check for updates on startup"));
-    updatesLayout->addRow(checkUpdatesCheck_);
-
-    tabLayout->addWidget(updatesGroup);
-
     tabLayout->addStretch();
     return wrapInScrollArea(tab);
 }
@@ -315,6 +314,113 @@ QWidget* SettingsDialog::createIndexerTab()
     indexerLayout->addRow(trackersCheck_);
 
     tabLayout->addWidget(indexerGroup);
+
+    // --- Authenticated tracker account/session ---
+#ifdef __APPLE__
+    QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker browser session"));
+    QVBoxLayout* ruTrackerLayout = new QVBoxLayout(ruTrackerGroup);
+    ruTrackerLayout->setSpacing(10);
+
+    QLabel* ruTrackerHint = new QLabel(
+        tr("On macOS RuTracker authorization, Cloudflare clearance, search and "
+           "release pages use one persistent embedded WebKit session. Rats Search "
+           "does not store or replay a separate RuTracker username/password."));
+    ruTrackerHint->setWordWrap(true);
+    ruTrackerHint->setObjectName("hintLabel");
+    ruTrackerLayout->addWidget(ruTrackerHint);
+
+    ruTrackerBrowserStatus_ = new QLabel(
+        tr("Session status is checked automatically on the next RuTracker search."));
+    ruTrackerBrowserStatus_->setWordWrap(true);
+    ruTrackerLayout->addWidget(ruTrackerBrowserStatus_);
+
+    ruTrackerAuthorizeButton_ = new QPushButton(tr("Authorize / Re-login"));
+    ruTrackerAuthorizeButton_->setToolTip(
+        tr("Clear only the embedded RuTracker website session and open a fresh login window."));
+    ruTrackerLayout->addWidget(ruTrackerAuthorizeButton_, 0, Qt::AlignLeft);
+
+    if (auto* ruTracker = app_ ? app_->ruTrackerRuSearch() : nullptr) {
+        connect(ruTrackerAuthorizeButton_, &QPushButton::clicked, this,
+            [this, ruTracker]() {
+                ruTrackerAuthorizeButton_->setEnabled(false);
+                ruTrackerBrowserStatus_->setText(
+                    tr("Opening a fresh RuTracker browser session…"));
+                ruTracker->reloginInBrowser();
+            });
+        connect(ruTracker,
+            &rats::net::RuTrackerRuSearchClient::browserAuthorizationChanged,
+            this, [this](bool authorized, const QString& message) {
+                Q_UNUSED(authorized);
+                ruTrackerBrowserStatus_->setText(message);
+                ruTrackerAuthorizeButton_->setEnabled(true);
+            });
+    }
+
+    tabLayout->addWidget(ruTrackerGroup);
+
+    QGroupBox* kinozalGroup = new QGroupBox(tr("Kinozal browser session"));
+    QVBoxLayout* kinozalLayout = new QVBoxLayout(kinozalGroup);
+    kinozalLayout->setSpacing(10);
+
+    QLabel* kinozalHint = new QLabel(
+        tr("Kinozal uses one persistent embedded WebKit session for Cloudflare, "
+           "authorization, search and exact release pages. Current mirrors are "
+           "kinozal.me with kinozal.guru fallback; kinozal.tv is intentionally "
+           "not used."));
+    kinozalHint->setWordWrap(true);
+    kinozalHint->setObjectName("hintLabel");
+    kinozalLayout->addWidget(kinozalHint);
+
+    kinozalBrowserStatus_ = new QLabel(
+        tr("Session status is checked automatically on the next Kinozal search."));
+    kinozalBrowserStatus_->setWordWrap(true);
+    kinozalLayout->addWidget(kinozalBrowserStatus_);
+
+    kinozalAuthorizeButton_ = new QPushButton(tr("Authorize / Re-login"));
+    kinozalAuthorizeButton_->setToolTip(
+        tr("Clear only Kinozal website data and open a fresh browser login."));
+    kinozalLayout->addWidget(kinozalAuthorizeButton_, 0, Qt::AlignLeft);
+
+    if (auto* kinozal = app_ ? app_->kinozalSearch() : nullptr) {
+        connect(kinozalAuthorizeButton_, &QPushButton::clicked, this,
+            [this, kinozal]() {
+                kinozalAuthorizeButton_->setEnabled(false);
+                kinozalBrowserStatus_->setText(
+                    tr("Opening a fresh Kinozal browser session…"));
+                kinozal->reloginInBrowser();
+            });
+        connect(kinozal,
+            &rats::net::KinozalSearchClient::browserAuthorizationChanged,
+            this, [this](bool authorized, const QString& message) {
+                Q_UNUSED(authorized);
+                kinozalBrowserStatus_->setText(message);
+                kinozalAuthorizeButton_->setEnabled(true);
+            });
+    }
+
+    tabLayout->addWidget(kinozalGroup);
+#else
+    QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker account"));
+    QFormLayout* ruTrackerLayout = new QFormLayout(ruTrackerGroup);
+    ruTrackerLayout->setSpacing(10);
+
+    ruTrackerUsernameEdit_ = new QLineEdit();
+    ruTrackerUsernameEdit_->setPlaceholderText(tr("RuTracker username"));
+    ruTrackerLayout->addRow(tr("Username:"), ruTrackerUsernameEdit_);
+
+    ruTrackerPasswordEdit_ = new QLineEdit();
+    ruTrackerPasswordEdit_->setEchoMode(QLineEdit::Password);
+    ruTrackerPasswordEdit_->setPlaceholderText(tr("RuTracker password"));
+    ruTrackerLayout->addRow(tr("Password:"), ruTrackerPasswordEdit_);
+
+    QLabel* ruTrackerHint = new QLabel(
+        tr("RuTracker search is enabled only when both fields are set."));
+    ruTrackerHint->setWordWrap(true);
+    ruTrackerHint->setObjectName("hintLabel");
+    ruTrackerLayout->addRow(ruTrackerHint);
+
+    tabLayout->addWidget(ruTrackerGroup);
+#endif
 
     // --- Spider Performance ---
     QGroupBox* perfGroup = new QGroupBox(tr("Spider Performance"));
@@ -623,7 +729,6 @@ void SettingsDialog::loadSettings()
     startMinimizedCheck_->setChecked(config_->startMinimized());
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
-    checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
     searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
     updateSearchHistoryButton();
 
@@ -641,6 +746,14 @@ void SettingsDialog::loadSettings()
     indexerCheck_->setChecked(config_->indexerEnabled());
     trackersCheck_->setChecked(config_->trackersEnabled());
     walkIntervalSpin_->setValue(config_->spiderWalkInterval());
+
+#ifndef __APPLE__
+    QSettings trackerSettings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    ruTrackerUsernameEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/username")).toString());
+    ruTrackerPasswordEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/password")).toString());
+#endif
 
     // Filters
     maxFilesSpin_->setValue(config_->filtersMaxFiles());
@@ -700,7 +813,6 @@ void SettingsDialog::saveSettings()
     config_->setStartMinimized(startMinimizedCheck_->isChecked());
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
-    config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
     config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 
     // Autostart lives in the OS (registry / .desktop / launch agent), which is its
@@ -727,6 +839,15 @@ void SettingsDialog::saveSettings()
     config_->setTrackersEnabled(trackersCheck_->isChecked());
     config_->setSpiderWalkInterval(walkIntervalSpin_->value());
 
+#ifndef __APPLE__
+    const QString ruTrackerUsername = ruTrackerUsernameEdit_->text().trimmed();
+    const QString ruTrackerPassword = ruTrackerPasswordEdit_->text();
+    settings.setValue(QStringLiteral("rutracker/username"), ruTrackerUsername);
+    settings.setValue(QStringLiteral("rutracker/password"), ruTrackerPassword);
+    if (auto* ruTracker = app_->ruTrackerRuSearch())
+        ruTracker->setCredentials(ruTrackerUsername, ruTrackerPassword);
+#endif
+
     // Save Filters
     config_->setFiltersMaxFiles(maxFilesSpin_->value());
     config_->setFiltersNamingRegExp(regexEdit_->text());
@@ -750,6 +871,7 @@ void SettingsDialog::saveSettings()
     if (!newDataDir.isEmpty()) {
         settings.setValue("dataDirectory", newDataDir);
     }
+    settings.sync();
 
     // Check if restart needed (only for settings that can't be applied at
     // runtime)
