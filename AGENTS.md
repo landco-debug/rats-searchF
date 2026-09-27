@@ -187,3 +187,22 @@ Implemented:
 
 Next stage:
 - fix clipped main/settings tab captions without changing search behavior.
+
+
+### Stage 8 — keep tab captions readable
+
+Commit message: `fix: stop eliding tab captions`.
+
+Observed on macOS Sequoia:
+- main tabs were shown as `Search Res...`, `Downlo...`, `Favori...`;
+- Settings tabs were similarly shortened.
+
+Implemented:
+- main and Settings tab bars use `Qt::ElideNone`;
+- tabs use their natural content width instead of expanding equally;
+- native tab scroll buttons stay enabled as the fallback when a genuinely narrow window cannot fit all complete captions.
+
+This is UI-only; search/source behavior is unchanged.
+
+Next stage:
+- repair macOS hide/minimize → Dock restore lifecycle and make explicit Quit stop mutating persisted tray preferences.

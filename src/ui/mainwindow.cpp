@@ -89,6 +89,7 @@
 #include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableView>
 #include <QTextEdit>
 #include <QTimer>
@@ -270,6 +271,12 @@ void MainWindow::setupUi()
 
     tabWidget = new QTabWidget(this);
     tabWidget->setDocumentMode(false);
+    // Never turn useful tab names into "Search Res..." / "Downlo...".
+    // Let every tab use its natural text width; if the details panel leaves too
+    // little room, Qt's native scroll buttons are preferable to ambiguous labels.
+    tabWidget->tabBar()->setElideMode(Qt::ElideNone);
+    tabWidget->tabBar()->setUsesScrollButtons(true);
+    tabWidget->tabBar()->setExpanding(false);
 
     // Search results tab
     QWidget* searchTab = new QWidget();

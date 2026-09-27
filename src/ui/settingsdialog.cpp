@@ -22,6 +22,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QStyle>
+#include <QTabBar>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(rats::app::Application* app, QWidget* parent)
@@ -50,6 +51,11 @@ void SettingsDialog::setupUi()
 
     // Tab widget
     tabWidget_ = new QTabWidget(this);
+    // Settings tabs use the same non-eliding policy as the main window: preserve
+    // the complete caption, fall back to native tab scrolling only when needed.
+    tabWidget_->tabBar()->setElideMode(Qt::ElideNone);
+    tabWidget_->tabBar()->setUsesScrollButtons(true);
+    tabWidget_->tabBar()->setExpanding(false);
     tabWidget_->addTab(createGeneralTab(), tr("⚙️ General"));
     tabWidget_->addTab(createNetworkTab(), tr("🌐 Network"));
     tabWidget_->addTab(createIndexerTab(), tr("🕷️ Indexer"));
