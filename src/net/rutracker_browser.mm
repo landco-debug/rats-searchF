@@ -3,6 +3,7 @@
 #ifdef __APPLE__
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
+#include <QDebug>
 #include <memory>
 #include <utility>
 
@@ -97,22 +98,46 @@ struct Pending {
     if (!_pending) return;
     const unsigned long serial = _serial;
     // DOM serialization is UTF-8 even when RuTracker's source is Windows-1251.
-    [webView evaluateJavaScript:@"document.documentElement.outerHTML"
+    [webView evaluateJavaScript:@"(() => {"
+        "const table = document.querySelector('table#tor-tbl');"
+        "const links = table ? Array.from(table.querySelectorAll('a.tLink')) : [];"
+        "return {html: document.documentElement.outerHTML, table: !!table,"
+        " rows: table ? table.querySelectorAll('tbody > tr').length : 0,"
+        " links: links.length,"
+        " ids: links.slice(0,3).map(a => (a.closest('tr')?.id || '') + '/' + (a.getAttribute('data-topic_id') || '')).join(', '),"
+        " loggedIn: !!document.getElementById('logged-in-username'),"
+        " magnet: !!document.querySelector('a[href*=\"xt=urn:btih:\"]')};"
+        "})()"
         completionHandler:^(id value, NSError* error) {
             if (!self->_pending || self->_serial != serial) return;
-            NSString* html = [value isKindOfClass:[NSString class]] ? value : @"";
+            if (error || ![value isKindOfClass:[NSDictionary class]]) {
+                [self.window orderOut:nil];
+                [self finishWithHtml:nil url:webView.URL
+                    error:error.localizedDescription ?: @"Cannot inspect RuTracker browser page"];
+                return;
+            }
+            NSDictionary* snapshot = value;
+            NSString* html = snapshot[@"html"] ?: @"";
             NSString* path = webView.URL.path ?: @"";
             const bool search = self->_pending->target.path().endsWith("tracker.php");
+            if (search) {
+                qInfo() << "[RuTrackerBrowser] search DOM"
+                        << "path" << QString::fromNSString(path)
+                        << "table" << [snapshot[@"table"] boolValue]
+                        << "rows" << [snapshot[@"rows"] intValue]
+                        << "topicLinks" << [snapshot[@"links"] intValue]
+                        << "row/topic IDs" << QString::fromNSString(snapshot[@"ids"]);
+            }
             const bool ready = search
-                ? [html containsString:@"tor-tbl"]
+                ? ([path hasSuffix:@"/tracker.php"] && [snapshot[@"table"] boolValue])
                 : ([path containsString:@"viewtopic.php"]
-                    && [html rangeOfString:@"xt=urn:btih:" options:NSCaseInsensitiveSearch].location != NSNotFound);
+                    && [snapshot[@"magnet"] boolValue]);
             if (ready) {
                 [self.window orderOut:nil];
                 [self finishWithHtml:html url:webView.URL error:nil];
                 return;
             }
-            const bool loggedIn = [html containsString:@"logged-in-username"];
+            const bool loggedIn = [snapshot[@"loggedIn"] boolValue];
             const bool onTarget = [webView.URL.host isEqualToString:self->_pending->target.host().toNSString()]
                 && [path isEqualToString:self->_pending->target.path().toNSString()];
             if (loggedIn && !onTarget) {

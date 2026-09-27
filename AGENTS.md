@@ -1085,3 +1085,39 @@ Stage 30 detail navigation hotfix (commit message:
 - report when tracker search rows are found but every detail is rejected, so a
   zero-result browser search has a specific diagnostic. Runtime acceptance on
   the user's Mac is still necessary; keep the PR draft.
+
+### Stage 31 — search-row identity after browser login
+
+Commit message: `fix: distinguish RuTracker row numbers from topic identities`.
+
+Evidence from the user's uploaded rats-search.log (2026-09-28 local time):
+- 00:31:23 and 00:32:04: searches for two common Russian movie titles end
+  with accepted=0, rejected=0, "no exact torrent rows";
+- this localizes the observed failure BEFORE detail navigation. Stage 30's
+  detail-URL move fix was not sufficient and must not be called the root cause;
+- current logs do not contain the actual search DOM, so they cannot distinguish
+  an empty website result from rows discarded by the parser.
+
+Reproduced parser defect:
+- parser required `tr#trs-tr-N` to have N equal to the topic ID in the link;
+- the independent johnlepikhin/rutracker-api search_basic.html fixture at
+  f1586eb7cb4a895c22903c3ce6972c071cf61324 uses row numbers 1/2 for topics
+  5956108/42. The previous admission logic returns zero, the fix returns two;
+- qBittorrent's nbusseneau RuTracker plugin extracts identity from data-topic_id,
+  rather than requiring it to equal the HTML row ID;
+- identify candidates by their exact official topic URL, cross-check explicit
+  data-topic_id on the title link and row, and still verify the topic's magnet
+  and description before emitting any result. DOM row IDs are presentation only;
+- regression test includes sequential row numbers plus conflicting explicit
+  topic IDs that must remain rejected.
+
+Browser diagnostics/readiness:
+- use DOM selectors for the actual tracker table, login marker and magnet;
+  text mentions in scripts/styles no longer count as loaded page elements;
+- log row/link counts and first three row/topic ID pairs (no credentials or
+  cookies), plus parsed candidate count, to distinguish transport and parsing;
+- JavaScript inspection errors are explicitly reported.
+
+Runtime limitation: the supplied log confirms the failing stage, not the
+specific HTML shape on the user's Mac. This fixes a reproduced defect and adds
+the missing evidence if another case remains. Keep PR #15 draft until accepted.

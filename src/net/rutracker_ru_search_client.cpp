@@ -562,6 +562,12 @@ void RuTrackerRuSearchClient::handleSearchPage(
         = RuTrackerRuSource::parseSearchPage(
             body, finalUrl, candidateCap);
 
+    qInfo() << "[RuTrackerRuSearchClient] search page"
+            << "path" << finalUrl.path()
+            << "bytes" << body.size()
+            << "table" << hasTorrentTable
+            << "parsed candidates" << candidates.size();
+
     if (candidates.isEmpty()) {
         if (!hasTorrentTable) {
             authenticated_ = false;

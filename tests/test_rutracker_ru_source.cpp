@@ -18,10 +18,39 @@ private slots:
     void audioDetailPageIsStrictWithoutVideo();
     void sparseExactReleaseIsNotHiddenByFieldParsing();
     void wrongTopicPageIsRejected();
+    void rowNumberIsNotTopicIdentity();
 };
 
 static const QString kHash
     = QStringLiteral("89abcdef0123456789abcdef0123456789abcdef");
+
+void TestRuTrackerRuSource::rowNumberIsNotTopicIdentity()
+{
+    // Real-world parsers/fixtures use sequential row IDs independently from
+    // the linked topic. A display ID must never discard an exact topic URL.
+    const QByteArray html = R"(
+      <table id="tor-tbl"><tbody>
+        <tr id="trs-tr-1"><td>
+          <a data-topic_id="5956108" class="tLink" href="viewtopic.php?t=5956108">Ubuntu Desktop</a>
+        </td></tr>
+        <tr id="trs-tr-2"><td>
+          <a data-topic_id="42" class="tLink" href="viewtopic.php?t=42">Other exact release</a>
+        </td></tr>
+        <tr id="trs-tr-3"><td>
+          <a data-topic_id="99" class="tLink" href="viewtopic.php?t=43">Conflicting identity</a>
+        </td></tr>
+        <tr id="trs-tr-4" data-topic_id="99"><td>
+          <a data-topic_id="44" class="tLink" href="viewtopic.php?t=44">Conflicting row identity</a>
+        </td></tr>
+      </tbody></table>)";
+    const auto rows = RuTrackerRuSource::parseSearchPage(
+        html, QUrl(QStringLiteral("https://rutracker.org/forum/tracker.php")));
+    QCOMPARE(rows.size(), 2);
+    QCOMPARE(rows.at(0).info.value(QStringLiteral("sourceTopicId")).toInt(), 5956108);
+    QCOMPARE(rows.at(1).info.value(QStringLiteral("sourceTopicId")).toInt(), 42);
+    QVERIFY(rows.at(0).hash.isEmpty());
+    QVERIFY(!rows.at(0).info.value(QStringLiteral("sourceVerified")).toBool());
+}
 
 void TestRuTrackerRuSource::buildsAuthenticatedForumSearchUrl()
 {

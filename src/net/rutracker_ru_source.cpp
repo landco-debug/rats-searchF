@@ -281,18 +281,25 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
     auto rows = rowRe.globalMatch(html);
     while (rows.hasNext() && out.size() < maxCandidates) {
         const QRegularExpressionMatch rowMatch = rows.next();
-        const int rowTopicId = rowMatch.captured(1).toInt();
         const QString row = rowMatch.captured(2);
 
         const QRegularExpressionMatch detail = detailRe.match(row);
         if (!detail.hasMatch())
             continue;
         const int linkTopicId = detail.captured(2).toInt();
-        if (rowTopicId <= 0 || linkTopicId != rowTopicId || seen.contains(rowTopicId))
+        // trs-tr-N is a presentation identifier, not a torrent identity:
+        // some pages number their rows independently of the topic IDs.
+        // Identity comes from the concrete topic URL and data-topic_id.
+        const int rowTopicId = linkTopicId;
+        if (rowTopicId <= 0 || seen.contains(rowTopicId))
             continue;
 
-        const QRegularExpressionMatch dataTopic = topicDataRe.match(row);
+        const QRegularExpressionMatch dataTopic = topicDataRe.match(detail.captured(0));
         if (dataTopic.hasMatch() && dataTopic.captured(1).toInt() != rowTopicId)
+            continue;
+        const QRegularExpressionMatch rowDataTopic = topicDataRe.match(
+            rowMatch.captured(0).section(QLatin1Char('>'), 0, 0));
+        if (rowDataTopic.hasMatch() && rowDataTopic.captured(1).toInt() != rowTopicId)
             continue;
 
         const QUrl sourceUrl = sourceparse::resolveUrl(pageUrl, detail.captured(1));
