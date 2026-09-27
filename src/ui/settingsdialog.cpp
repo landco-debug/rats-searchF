@@ -756,6 +756,7 @@ void SettingsDialog::saveSettings()
     if (!newDataDir.isEmpty()) {
         settings.setValue("dataDirectory", newDataDir);
     }
+    settings.sync();
 
     // Check if restart needed (only for settings that can't be applied at
     // runtime)

@@ -266,6 +266,12 @@ private:
     QSystemTrayIcon* trayIcon = nullptr;
     QMenu* trayMenu = nullptr;
     bool trayNotificationShown_ = false;
+    // True only when this window was intentionally hidden by our tray/minimize
+    // logic. Used to distinguish a Dock activation from startMinimized.
+    bool hiddenToTray_ = false;
+    // Explicit File/Tray Quit must bypass close-to-tray without modifying the
+    // user's persisted trayOnClose setting.
+    bool forceQuit_ = false;
 
     // Set once the user has committed to installing an update. While true,
     // closeEvent() shuts the app down unconditionally — no tray-hide, no

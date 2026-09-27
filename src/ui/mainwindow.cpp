@@ -134,6 +134,15 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     setupStatusBar();
     setupSystemTray();
 
+    // On macOS, clicking the Dock icon activates the application but does not
+    // necessarily route through QSystemTrayIcon. If this window was hidden by
+    // our minimize/close-to-tray path, restore it explicitly on app activation.
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+        [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive && hiddenToTray_)
+                QTimer::singleShot(0, this, &MainWindow::bringToFront);
+        });
+
     // Restore UI state only after every referenced widget/header/splitter exists.
     // The old code restored before setupUi() and then immediately called
     // resize(1400, 900), which discarded most of the persisted state.
@@ -384,7 +393,10 @@ void MainWindow::setupMenuBar()
 
     QAction* quitAction = fileMenu->addAction(tr("&Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
-    connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
+    connect(quitAction, &QAction::triggered, this, [this]() {
+        forceQuit_ = true;
+        close();
+    });
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
 
@@ -1102,10 +1114,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
 {
     rats::app::ConfigStore* config = app_ ? app_->config() : nullptr;
 
-    // An update install is deliberately shutting the app down. Never intercept
-    // it with the tray or a confirmation prompt — the external updater is
-    // blocked waiting for this process to exit.
-    if (updateInstalling_) {
+    // Explicit Quit and update installation are deliberate shutdowns. Never
+    // intercept them with close-to-tray, and never rewrite tray preferences to
+    // force the close.
+    if (updateInstalling_ || forceQuit_) {
         saveSettings();
         event->accept();
         QApplication::quit();
@@ -1115,6 +1127,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     // Hide to tray instead of closing if enabled.
     bool closeToTray = config ? config->trayOnClose() : false;
     if (closeToTray && trayIcon && trayIcon->isVisible()) {
+        hiddenToTray_ = true;
         hide();
         if (!trayNotificationShown_) {
             trayIcon->showMessage(tr("Rats Search"), tr("Application is still running in the system tray."),
@@ -2191,8 +2204,7 @@ void MainWindow::setupSystemTray()
 
     QAction* quitAction = trayMenu->addAction(tr("Quit"));
     connect(quitAction, &QAction::triggered, [this]() {
-        if (app_->config())
-            app_->config()->setTrayOnClose(false); // Force actual close
+        forceQuit_ = true;
         close();
     });
 
@@ -2215,18 +2227,42 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
 
 void MainWindow::toggleWindowVisibility()
 {
-    if (isVisible() && !isMinimized())
+    if (isVisible() && !isMinimized()) {
+        hiddenToTray_ = true;
         hide();
-    else
+    } else {
         bringToFront();
+    }
 }
 
 void MainWindow::bringToFront()
 {
+    hiddenToTray_ = false;
+
+    // Clear the minimized native-window state BEFORE making a hidden window
+    // visible. The previous show() -> clear-minimized order can produce an empty
+    // NSWindow surface after a minimize-to-tray cycle on macOS.
+    if (isMinimized())
+        setWindowState(windowState() & ~Qt::WindowMinimized);
+
     show();
-    setWindowState(windowState() & ~Qt::WindowMinimized);
-    activateWindow();
+
+    // Defensive re-exposure of the central hierarchy. Qt normally keeps these
+    // widgets visible while the top-level window is hidden, but explicitly
+    // restoring them makes Dock/tray activation deterministic on macOS.
+    if (centralWidget()) {
+        centralWidget()->show();
+        if (centralWidget()->layout())
+            centralWidget()->layout()->activate();
+    }
+    if (verticalSplitter)
+        verticalSplitter->show();
+    if (tabWidget)
+        tabWidget->show();
+
     raise();
+    activateWindow();
+    update();
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
@@ -2255,6 +2291,7 @@ void MainWindow::changeEvent(QEvent* event)
     if (event->type() == QEvent::WindowStateChange) {
         bool minimizeToTray = app_ && app_->config() ? app_->config()->trayOnMinimize() : false;
         if (isMinimized() && minimizeToTray && trayIcon && trayIcon->isVisible()) {
+            hiddenToTray_ = true;
             QTimer::singleShot(0, this, &QWidget::hide);
             if (trayIcon && !trayNotificationShown_) {
                 trayIcon->showMessage(tr("Rats Search"), tr("Application minimized to tray. Click to restore."),

@@ -206,3 +206,28 @@ This is UI-only; search/source behavior is unchanged.
 
 Next stage:
 - repair macOS hide/minimize → Dock restore lifecycle and make explicit Quit stop mutating persisted tray preferences.
+
+
+### Stage 9 — macOS tray/Dock restore and settings persistence
+
+Commit message: `fix: restore hidden macOS window without losing settings`.
+
+Observed on macOS Sequoia:
+- after minimize-to-tray, activating Rats Search from the Dock could show a blank grey main window until restart;
+- tray Quit could make a saved tray setting appear to revert.
+
+Root causes found:
+- `bringToFront()` called `show()` while the hidden native window was still in `WindowMinimized`, then cleared the minimized state afterwards;
+- tray Quit forced shutdown by calling `ConfigStore::setTrayOnClose(false)`, and normal shutdown then persisted that artificial value.
+
+Implemented:
+- clear `WindowMinimized` before showing the hidden window;
+- explicitly reactivate/show the central widget, splitters and tab widget after tray restoration;
+- remember whether the window was intentionally hidden by tray/minimize logic;
+- when macOS application activation comes from the Dock and that flag is set, route restoration through `bringToFront()`;
+- File > Quit and tray Quit set an in-memory `forceQuit_` flag instead of changing any preference;
+- close-to-tray records the hidden state but leaves settings untouched;
+- Settings dialog explicitly `sync()`s its QSettings values on Save.
+
+Next stage:
+- validate these three fixes in the macOS ARM artifact; after user acceptance, add additional torrent sources using the same exact-source/strict-completeness contract rather than reintroducing post-hoc title matching.
