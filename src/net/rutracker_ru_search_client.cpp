@@ -43,6 +43,7 @@ void RuTrackerRuSearchClient::cancel()
     finishedEmitted_ = true;
     currentQuery_.clear();
     currentSortKey_.clear();
+    currentContentType_.clear();
     detailQueue_.clear();
     activeDetails_ = 0;
     accepted_ = 0;
@@ -58,12 +59,13 @@ void RuTrackerRuSearchClient::cancel()
 }
 
 void RuTrackerRuSearchClient::search(
-    const QString& query, int limit, const QString& sortKey)
+    const QString& query, int limit, const QString& sortKey, const QString& contentType)
 {
     cancel();
 
     currentQuery_ = query.trimmed();
     currentSortKey_ = sortKey;
+    currentContentType_ = contentType.trimmed().toLower();
     requestedLimit_ = qBound(1, limit, 50);
     accepted_ = 0;
     rejected_ = 0;
@@ -88,7 +90,7 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
         return;
 
     const QUrl url = RuTrackerRuSource::searchUrl(
-        currentQuery_, currentSortKey_);
+        currentQuery_, currentSortKey_, currentContentType_);
     QNetworkReply* reply = networkManager_->get(requestFor(url));
     replies_.insert(reply);
 
@@ -129,6 +131,11 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
 
             searchPageResolved_ = true;
             for (domain::Torrent& torrent : candidates) {
+                if (!currentContentType_.isEmpty()
+                    && domain::toString(torrent.contentType).compare(currentContentType_, Qt::CaseInsensitive) != 0) {
+                    ++rejected_;
+                    continue;
+                }
                 DetailJob job;
                 job.url = QUrl(torrent.info
                     .value(QStringLiteral("sourceUrl")).toString());

@@ -140,13 +140,15 @@ QJsonArray audioLines(const QString& description)
     QJsonArray out;
     const QStringList lines
         = description.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+    const QRegularExpression technicalLine(
+        QStringLiteral("^\\s*(?:(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*|"
+                       "Формат|Format|Аудиокодек|Audio\\s*codec|Кодек|Codec|"
+                       "Битрейт|Bitrate|Тип\\s*рипа|Rip\\s*type)\\s*:"),
+        QRegularExpression::CaseInsensitiveOption);
     for (const QString& raw : lines) {
         const QString line = raw.trimmed();
-        if (line.contains(QRegularExpression(
-                QStringLiteral(R"(^\s*(?:Audio|Аудио|Звук|Sound)\s*#?\d*\s*:)"),
-                QRegularExpression::CaseInsensitiveOption))) {
+        if (technicalLine.match(line).hasMatch())
             out.append(line);
-        }
     }
     return out;
 }
@@ -316,8 +318,11 @@ bool RutorSource::applyDetailPage(
         video = firstMatch(description,
             QStringLiteral(R"(\b((?:HEVC|H[ .]?265|x265|AVC|H[ .]?264|x264)[^\n]{0,120})\b)"));
     }
-    if (!video.isEmpty())
+    if (!video.isEmpty()) {
         info[QStringLiteral("video")] = video;
+        if (torrent.contentType == domain::ContentType::Unknown)
+            torrent.contentType = domain::ContentType::Video;
+    }
 
     const QJsonArray audio = audioLines(description);
     if (!audio.isEmpty())
@@ -351,9 +356,15 @@ bool RutorSource::isStrictComplete(const domain::Torrent& torrent)
     if (description.size() < 160)
         return false;
 
-    return !info.value(QStringLiteral("quality")).toString().isEmpty()
-        && !info.value(QStringLiteral("video")).toString().isEmpty()
-        && !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+    const bool hasQuality = !info.value(QStringLiteral("quality")).toString().isEmpty();
+    const bool hasVideo = !info.value(QStringLiteral("video")).toString().isEmpty();
+    const bool hasAudio = !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+
+    if (torrent.contentType == domain::ContentType::Video || hasVideo || hasQuality)
+        return hasQuality && hasVideo && hasAudio;
+    if (torrent.contentType == domain::ContentType::Audio)
+        return hasAudio;
+    return true;
 }
 
 } // namespace rats::net

@@ -13,25 +13,17 @@ TorrentItemDelegate::TorrentItemDelegate(QObject* parent) : QStyledItemDelegate(
 QColor TorrentItemDelegate::getSeedersColor(int seeders)
 {
     const rats::ui::Theme& theme = rats::ui::Theme::instance();
-    if (seeders > 50)
-        return theme.color(QLatin1String("seedersHigh"));
-    if (seeders > 10)
-        return theme.color(QLatin1String("seedersMid"));
-    if (seeders > 0)
-        return theme.color(QLatin1String("seedersLow"));
-    return theme.color(QLatin1String("peersNone"));
+    return seeders > 0
+        ? theme.color(QLatin1String("success"))
+        : theme.color(QLatin1String("peersNone"));
 }
 
 QColor TorrentItemDelegate::getLeechersColor(int leechers)
 {
     const rats::ui::Theme& theme = rats::ui::Theme::instance();
-    if (leechers > 50)
-        return theme.color(QLatin1String("leechersHigh"));
-    if (leechers > 10)
-        return theme.color(QLatin1String("leechersMid"));
-    if (leechers > 0)
-        return theme.color(QLatin1String("leechersLow"));
-    return theme.color(QLatin1String("peersNone"));
+    return leechers > 0
+        ? theme.color(QLatin1String("danger"))
+        : theme.color(QLatin1String("peersNone"));
 }
 
 void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const

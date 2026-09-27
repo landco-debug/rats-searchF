@@ -12,8 +12,11 @@ class TestRuTrackerRuSource : public QObject {
 
 private slots:
     void buildsPublicSearchUrl();
+    void audioSearchUsesAudioForums();
     void searchRowCarriesExactProvenanceAndSwarmCounts();
+    void audioForumClassifiesAudio();
     void detailPageVerifiesExactHashAndRichInfo();
+    void audioDetailPageIsStrictWithoutVideo();
     void mismatchedHashIsRejected();
 };
 
@@ -31,6 +34,19 @@ void TestRuTrackerRuSource::buildsPublicSearchUrl()
     QCOMPARE(query.queryItemValue(QStringLiteral("nm")), QStringLiteral("Under Siege"));
     QCOMPARE(query.queryItemValue(QStringLiteral("o")), QStringLiteral("10"));
     QCOMPARE(query.queryItemValue(QStringLiteral("s")), QStringLiteral("2"));
+}
+
+void TestRuTrackerRuSource::audioSearchUsesAudioForums()
+{
+    const QUrl url = RuTrackerRuSource::searchUrl(
+        QStringLiteral("Sade"), QStringLiteral("seeders_desc"), QStringLiteral("audio"));
+    QUrlQuery query(url);
+    QStringList forums;
+    for (const auto& item : query.queryItems())
+        if (item.first == QStringLiteral("f[]"))
+            forums.append(item.second);
+    QVERIFY(forums.contains(QStringLiteral("1666")));
+    QVERIFY(!forums.contains(QStringLiteral("-1")));
 }
 
 void TestRuTrackerRuSource::searchRowCarriesExactProvenanceAndSwarmCounts()
@@ -62,9 +78,29 @@ void TestRuTrackerRuSource::searchRowCarriesExactProvenanceAndSwarmCounts()
     QCOMPARE(t.info.value(QStringLiteral("sourceProvider")).toString(),
         QStringLiteral("rutracker-ru"));
     QCOMPARE(t.info.value(QStringLiteral("sourceTopicId")).toInt(), 777);
+    QCOMPARE(t.info.value(QStringLiteral("sourceForumId")).toInt(), 1757);
+    QCOMPARE(rats::domain::toId(t.contentType), rats::domain::toId(rats::domain::ContentType::Video));
     QCOMPARE(t.info.value(QStringLiteral("sourceUrl")).toString(),
         QStringLiteral("http://rutracker.ru/viewtopic.php?t=777"));
     QVERIFY(!t.info.value(QStringLiteral("sourceVerified")).toBool());
+}
+
+void TestRuTrackerRuSource::audioForumClassifiesAudio()
+{
+    const QByteArray html = R"(
+      <tr id="tor_778">
+        <td><a href="tracker.php?f=1666">Зарубежная рок-музыка</a></td>
+        <td><a href="./viewtopic.php?t=778"><b>Sade - Diamond Life [FLAC]</b></a></td>
+        <td>author</td><td>downloads</td><td>misc</td><td><u>1048576000</u></td>
+        <td class="seedmed"><b>30</b></td><td class="leechmed"><b>2</b></td>
+        <td>100</td><td><u>1790500000</u></td>
+        <td><a href="magnet:?xt=urn:btih:89ABCDEF0123456789ABCDEF0123456789ABCDEF">magnet</a></td>
+      </tr>)";
+    const QVector<Torrent> torrents=RuTrackerRuSource::parseSearchPage(
+        html,QUrl(QStringLiteral("http://rutracker.ru/tracker.php")));
+    QCOMPARE(torrents.size(),1);
+    QCOMPARE(torrents.first().info.value(QStringLiteral("sourceForumId")).toInt(),1666);
+    QCOMPARE(rats::domain::toId(torrents.first().contentType),rats::domain::toId(rats::domain::ContentType::Audio));
 }
 
 void TestRuTrackerRuSource::detailPageVerifiesExactHashAndRichInfo()
@@ -101,6 +137,35 @@ void TestRuTrackerRuSource::detailPageVerifiesExactHashAndRichInfo()
     QVERIFY(!t.info.value(QStringLiteral("quality")).toString().isEmpty());
     QVERIFY(!t.info.value(QStringLiteral("video")).toString().isEmpty());
     QCOMPARE(t.info.value(QStringLiteral("audioTracks")).toArray().size(), 2);
+    QVERIFY(RuTrackerRuSource::isStrictComplete(t));
+}
+
+void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()
+{
+    Torrent t;
+    t.hash=kHash;
+    t.name=QStringLiteral("Sade - Diamond Life [FLAC]");
+    t.contentType=rats::domain::ContentType::Audio;
+    t.info[QStringLiteral("sourceProvider")]=QStringLiteral("rutracker-ru");
+    t.info[QStringLiteral("sourceTopicId")]=778;
+    t.info[QStringLiteral("sourceForumId")]=1666;
+    t.info[QStringLiteral("sourceUrl")]=QStringLiteral("http://rutracker.ru/viewtopic.php?t=778");
+    const QByteArray html=R"(
+      <h1 id="topic-title">Sade - Diamond Life [FLAC]</h1>
+      <a href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef">magnet</a>
+      <div class="post_body">
+      Исполнитель: Sade<span class="post-br"></span>
+      Альбом: Diamond Life<span class="post-br"></span>
+      Формат: FLAC<span class="post-br"></span>
+      Битрейт: Lossless<span class="post-br"></span>
+      Тип рипа: tracks + .cue<span class="post-br"></span>
+      Подробное описание конкретной музыкальной раздачи, включая издание, источник рипа,
+      треклист и технические параметры lossless-аудио. Этот текст намеренно достаточно длинный
+      для строгой проверки без несуществующих полей Видео и Качество.
+      </div><!--/post_body-->)";
+    QVERIFY(RuTrackerRuSource::applyDetailPage(t,html,QUrl(QStringLiteral("http://rutracker.ru/viewtopic.php?t=778"))));
+    QVERIFY(t.info.value(QStringLiteral("video")).toString().isEmpty());
+    QVERIFY(t.info.value(QStringLiteral("audioTracks")).toArray().size()>=2);
     QVERIFY(RuTrackerRuSource::isStrictComplete(t));
 }
 

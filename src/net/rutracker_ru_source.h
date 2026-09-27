@@ -18,7 +18,8 @@ class RuTrackerRuSource {
 public:
     static QUrl searchUrl(
         const QString& query,
-        const QString& sortKey = QStringLiteral("seeders_desc"));
+        const QString& sortKey = QStringLiteral("seeders_desc"),
+        const QString& contentType = QString());
 
     static QVector<domain::Torrent> parseSearchPage(
         const QByteArray& rawData,

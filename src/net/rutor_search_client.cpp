@@ -1,11 +1,14 @@
 #include "net/rutor_search_client.h"
 
 #include "net/rutor_source.h"
+#include "domain/content_classifier.h"
+#include "net/torrent_engine.h"
 
 #include <QDebug>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QTemporaryFile>
 
 namespace rats::net {
 RutorSearchClient::RutorSearchClient(QObject* parent)
@@ -25,6 +28,7 @@ void RutorSearchClient::cancel()
     finishedEmitted_ = true;
     currentQuery_.clear();
     currentSortKey_.clear();
+    currentContentType_.clear();
     detailQueue_.clear();
     activeDetails_ = 0;
     accepted_ = 0;
@@ -40,12 +44,13 @@ void RutorSearchClient::cancel()
 }
 
 void RutorSearchClient::search(
-    const QString& query, int limit, const QString& sortKey)
+    const QString& query, int limit, const QString& sortKey, const QString& contentType)
 {
     cancel();
 
     currentQuery_ = query.trimmed();
     currentSortKey_ = sortKey;
+    currentContentType_ = contentType.trimmed().toLower();
     requestedLimit_ = qBound(1, limit, 50);
     accepted_ = 0;
     rejected_ = 0;
@@ -160,15 +165,60 @@ void RutorSearchClient::processQueue(int generation)
     while (activeDetails_ < kMaxConcurrentDetails
         && !detailQueue_.isEmpty()
         && accepted_ < requestedLimit_) {
-        DetailJob job = detailQueue_.dequeue();
+        DetailJob job=detailQueue_.dequeue();
         ++activeDetails_;
-        fetchDetail(std::move(job), generation);
+        if(!currentContentType_.isEmpty()){
+            const QUrl torrentUrl(job.torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
+            if(!torrentUrl.isValid()){ ++rejected_; --activeDetails_; continue; }
+            fetchTypeProbe(std::move(job),generation,torrentUrl);
+        } else {
+            fetchDetail(std::move(job),generation);
+        }
     }
 
     if (accepted_ >= requestedLimit_)
         detailQueue_.clear();
 
     finishIfIdle(generation);
+}
+
+void RutorSearchClient::fetchTypeProbe(DetailJob job, int generation, const QUrl& torrentUrl, bool mirrorRetried)
+{
+    QNetworkRequest request(torrentUrl);
+    request.setHeader(QNetworkRequest::UserAgentHeader,QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 RatsSearch/2"));
+    request.setRawHeader("Accept","application/x-bittorrent,application/octet-stream,*/*;q=0.5");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(kTimeoutMs);
+    QNetworkReply* reply=networkManager_->get(request); replies_.insert(reply);
+    connect(reply,&QNetworkReply::finished,this,[this,reply,generation,job=std::move(job),torrentUrl,mirrorRetried]() mutable {
+        replies_.remove(reply);
+        const auto error=reply->error();
+        const QByteArray body=error==QNetworkReply::NoError?reply->readAll():QByteArray();
+        reply->deleteLater();
+        if(generation!=generation_ || finishedEmitted_) return;
+        if(error!=QNetworkReply::NoError && !mirrorRetried){ fetchTypeProbe(std::move(job),generation,alternateMirror(torrentUrl),true); return; }
+        bool matched=false;
+        constexpr int kMaxTorrentMetadataBytes=32*1024*1024;
+        if(error==QNetworkReply::NoError && !body.isEmpty() && body.size()<=kMaxTorrentMetadataBytes){
+            QTemporaryFile temp;
+            if(temp.open() && temp.write(body)==body.size()){
+                const QString path=temp.fileName(); temp.flush(); temp.close();
+                TorrentEngine parser(nullptr);
+                const TorrentMetadata metadata=parser.readTorrentFile(path);
+                if(metadata.valid && metadata.hash.compare(job.torrent.hash,Qt::CaseInsensitive)==0){
+                    QVector<domain::File> files; files.reserve(metadata.files.size());
+                    for(const EngineFile& source:metadata.files) files.append(domain::File{source.path,source.size});
+                    const domain::Classification c=domain::ContentClassifier::classify(job.torrent.name,files);
+                    job.torrent.contentType=c.type; job.torrent.contentCategory=c.category;
+                    job.torrent.fileList=files; job.torrent.files=files.size();
+                    if(job.torrent.size<=0) job.torrent.size=metadata.totalSize;
+                    matched=domain::toString(job.torrent.contentType).compare(currentContentType_,Qt::CaseInsensitive)==0;
+                }
+            }
+        }
+        if(matched){ fetchDetail(std::move(job),generation); return; }
+        ++rejected_; --activeDetails_; processQueue(generation);
+    });
 }
 
 void RutorSearchClient::fetchDetail(DetailJob job, int generation)

@@ -9,6 +9,7 @@
 #include <QSet>
 #include <QStringList>
 #include <QUrlQuery>
+#include <algorithm>
 
 namespace rats::net {
 namespace {
@@ -133,14 +134,10 @@ QJsonArray audioLines(const QString& description)
     QJsonArray out;
     const QStringList lines
         = description.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    for (const QString& raw : lines) {
-        const QString line = raw.trimmed();
-        if (line.contains(QRegularExpression(
-                QStringLiteral(R"(^\s*(?:Audio|Аудио|Звук|Sound)\s*#?\d*\s*:)"),
-                QRegularExpression::CaseInsensitiveOption))) {
-            out.append(line);
-        }
-    }
+    const QRegularExpression technicalLine(
+        QStringLiteral("^\\s*(?:(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*|Формат|Format|Аудиокодек|Audio\\s*codec|Кодек|Codec|Битрейт|Bitrate|Тип\\s*рипа|Rip\\s*type)\\s*:"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (const QString& raw : lines) { const QString line=raw.trimmed(); if(technicalLine.match(line).hasMatch()) out.append(line); }
     return out;
 }
 
@@ -179,6 +176,61 @@ bool isPublicRuTrackerUrl(const QUrl& url)
         && url.path().endsWith(QStringLiteral("/viewtopic.php"));
 }
 
+const QSet<int>& audioForums()
+{
+    static const QSet<int> ids = {
+        730,776,777,1156,1158,1233,1159,1315,1223,1635,1637,1643,1636,1639,1640,1177,1642,1427,1641,
+        1561,1598,1599,1600,1601,1200,1552,1565,1554,1553,1567,1566,1713,1556,1588,1580,1581,1582,
+        1583,1584,1585,1586,1587,1602,1590,1591,1592,1593,1594,1595,1596,1597,1626,1627,1628,1610,
+        1611,1457,1613,1614,1203,1615,1616,1617,1618,1205,1619,1620,1206,1575,1576,1577,1630,1631,
+        1633,1540,1604,1562,1185,1183,1664,1665,1666,1667,1668,1670,1746,1669,1740,1679,1680,1681,
+        1682,1683,1684,1685,1686,1687,1688,1689,1690,1691,1692,1693
+    };
+    return ids;
+}
+const QSet<int>& videoForums()
+{
+    static const QSet<int> ids = {
+        1748,1757,1749,1758,1735,1736,1737,1738,1739,1695,1697,1696,1698,1699,1701,1702,1671,1677,
+        1676,1675,1674,1673,1672,1656,1662,1661,1660,1659,1658,1657,1730,1731,1732,1733,1725,1726,
+        1727,1728,1719,1720,1721,1722,1715,1734,1716,820,840,841,825,830,1317,838,845,1560,798,802,
+        801,1318,1751,1752,1754,1756,1742,1743,1744,1745,1708,1710,1709,1711,1705,1086,1085,1551,
+        1087,1703,1083,1082,1084,125,1353,1355,1352,1343,1025,8,1347,1348,1349,12,13
+    };
+    return ids;
+}
+const QSet<int>& bookForums(){ static const QSet<int> ids={726,728,761,760,757,1314,722,727,1021,1020}; return ids; }
+const QSet<int>& gameForums(){ static const QSet<int> ids={60,73,61,1234,84,82,85,78,77,76,1538,1539,878}; return ids; }
+const QSet<int>& softwareForums()
+{
+    static const QSet<int> ids = {
+        105,1663,1120,706,212,210,213,215,1395,107,1405,1398,193,1518,195,341,196,969,1523,1505,201,
+        1506,1508,1509,1507,108,217,218,222,1404,1522,1504,220,221,219,1511,1512,1513,1514,1515,1516,
+        110,966,1500,1501,967,965,1499,1502,1503,968,1287,1307,1306,1305,1289,1302,1301,1298,1293,
+        1292,1291,1294,1303,1300,1299,1296,1295
+    };
+    return ids;
+}
+domain::ContentType contentTypeForForum(int forumId)
+{
+    if (audioForums().contains(forumId)) return domain::ContentType::Audio;
+    if (videoForums().contains(forumId)) return domain::ContentType::Video;
+    if (bookForums().contains(forumId)) return domain::ContentType::Books;
+    if (gameForums().contains(forumId)) return domain::ContentType::Games;
+    if (softwareForums().contains(forumId)) return domain::ContentType::Software;
+    return domain::ContentType::Unknown;
+}
+const QSet<int>* forumsForType(const QString& type)
+{
+    const QString key=type.trimmed().toLower();
+    if(key==QStringLiteral("audio")) return &audioForums();
+    if(key==QStringLiteral("video")) return &videoForums();
+    if(key==QStringLiteral("books")) return &bookForums();
+    if(key==QStringLiteral("games")) return &gameForums();
+    if(key==QStringLiteral("software")) return &softwareForums();
+    return nullptr;
+}
+
 } // namespace
 
 int RuTrackerRuSource::sortColumn(const QString& sortKey)
@@ -197,11 +249,16 @@ int RuTrackerRuSource::sortDirection(const QString& sortKey)
     return sortKey.endsWith(QStringLiteral("_asc")) ? 1 : 2;
 }
 
-QUrl RuTrackerRuSource::searchUrl(const QString& query, const QString& sortKey)
+QUrl RuTrackerRuSource::searchUrl(const QString& query, const QString& sortKey, const QString& contentType)
 {
     QUrl url(QStringLiteral("http://rutracker.ru/tracker.php"));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("f[]"), QStringLiteral("-1"));
+    if (const QSet<int>* forums=forumsForType(contentType); forums && !forums->isEmpty()) {
+        QList<int> sorted=forums->values(); std::sort(sorted.begin(),sorted.end());
+        for(int forumId:sorted) q.addQueryItem(QStringLiteral("f[]"),QString::number(forumId));
+    } else {
+        q.addQueryItem(QStringLiteral("f[]"),QStringLiteral("-1"));
+    }
     q.addQueryItem(QStringLiteral("prev_allw"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("prev_a"), QStringLiteral("0"));
     q.addQueryItem(QStringLiteral("prev_dla"), QStringLiteral("0"));
@@ -251,6 +308,9 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
         QStringLiteral(R"re(href\s*=\s*["'](magnet:\?[^"']*xt=urn:btih:([A-Fa-f0-9]{40})[^"']*)["'])re"),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
+    const QRegularExpression forumRe(
+        QStringLiteral(R"re(href\s*=\s*["'][^"']*tracker\.php\?f=(\d+)[^"']*["'])re"),
+        QRegularExpression::CaseInsensitiveOption);
 
     QSet<QString> seen;
     auto rows = rowRe.globalMatch(html);
@@ -284,6 +344,8 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
         info[QStringLiteral("sourceTopicId")] = detail.captured(2).toInt();
         info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
+        const QRegularExpressionMatch forum=forumRe.match(row);
+        if(forum.hasMatch()){ const int forumId=forum.captured(1).toInt(); info[QStringLiteral("sourceForumId")]=forumId; torrent.contentType=contentTypeForForum(forumId); }
         info[QStringLiteral("sourceVerified")] = false;
         torrent.info = info;
 
@@ -355,8 +417,10 @@ bool RuTrackerRuSource::applyDetailPage(
         video = firstMatch(description,
             QStringLiteral(R"(\b((?:HEVC|H[ .]?265|x265|AVC|H[ .]?264|x264)[^\n]{0,160})\b)"));
     }
-    if (!video.isEmpty())
+    if (!video.isEmpty()) {
         info[QStringLiteral("video")] = video;
+        if (torrent.contentType == domain::ContentType::Unknown) torrent.contentType = domain::ContentType::Video;
+    }
 
     const QJsonArray audio = audioLines(description);
     if (!audio.isEmpty())
@@ -392,14 +456,14 @@ bool RuTrackerRuSource::isStrictComplete(const domain::Torrent& torrent)
     if (!isPublicRuTrackerUrl(sourceUrl))
         return false;
 
-    const QString description
-        = info.value(QStringLiteral("description")).toString().trimmed();
-    if (description.size() < 160)
-        return false;
-
-    return !info.value(QStringLiteral("quality")).toString().isEmpty()
-        && !info.value(QStringLiteral("video")).toString().isEmpty()
-        && !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+    const QString description=info.value(QStringLiteral("description")).toString().trimmed();
+    if(description.size()<160) return false;
+    const bool hasQuality=!info.value(QStringLiteral("quality")).toString().isEmpty();
+    const bool hasVideo=!info.value(QStringLiteral("video")).toString().isEmpty();
+    const bool hasAudio=!info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+    if(torrent.contentType==domain::ContentType::Video || hasVideo || hasQuality) return hasQuality && hasVideo && hasAudio;
+    if(torrent.contentType==domain::ContentType::Audio) return hasAudio;
+    return true;
 }
 
 } // namespace rats::net

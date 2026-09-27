@@ -82,6 +82,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPointer>
+#include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -113,6 +114,35 @@ using rats::domain::Torrent;
 using rats::service::SearchService;
 using rats::service::UpdateService;
 namespace codec = rats::domain::codec;
+
+namespace {
+class SearchHeaderView final : public QHeaderView {
+public:
+    explicit SearchHeaderView(QWidget* parent) : QHeaderView(Qt::Horizontal, parent) {}
+protected:
+    void paintSection(QPainter* painter, const QRect& rect, int logicalIndex) const override
+    {
+        QHeaderView::paintSection(painter, rect, logicalIndex);
+        if (logicalIndex != SearchResultModel::SeedersColumn
+            && logicalIndex != SearchResultModel::LeechersColumn)
+            return;
+        const bool seeders = logicalIndex == SearchResultModel::SeedersColumn;
+        const QColor color = rats::ui::Theme::instance().color(
+            seeders ? QLatin1String("success") : QLatin1String("danger"));
+        QRect textRect = rect.adjusted(3, 0, -3, 0);
+        if (sortIndicatorSection() == logicalIndex)
+            textRect.adjust(0, 0, -12, 0);
+        painter->save();
+        painter->setPen(color);
+        QFont font = painter->font();
+        font.setBold(true);
+        painter->setFont(font);
+        painter->drawText(textRect, Qt::AlignCenter,
+            seeders ? QStringLiteral("S") : QStringLiteral("L"));
+        painter->restore();
+    }
+};
+} // namespace
 
 MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     : QMainWindow(parent), app_(app), trayIcon(nullptr), trayMenu(nullptr)
@@ -303,6 +333,7 @@ void MainWindow::setupUi()
 
     resultsTableView->setModel(searchResultModel);
     resultsTableView->setItemDelegate(torrentDelegate);
+    resultsTableView->setHorizontalHeader(new SearchHeaderView(resultsTableView));
     resultsTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     resultsTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     resultsTableView->setAlternatingRowColors(true);
@@ -315,8 +346,8 @@ void MainWindow::setupUi()
     resultsTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     resultsTableView->setMouseTracking(true);
 
-    // Keep the release name wide. The compact swarm columns use the standard
-    // Russian torrent shorthand С/Л, and Date contains no time component.
+    // Keep the release name wide. S/L are compact Latin torrent shorthand,
+    // drawn in conventional green/red; Date contains no time component.
     resultsTableView->horizontalHeader()->setSectionResizeMode(
         SearchResultModel::NameColumn, QHeaderView::Stretch);
     resultsTableView->horizontalHeader()->setSectionResizeMode(
@@ -566,6 +597,10 @@ void MainWindow::connectSearchSignals()
 
     // Changing a filter re-runs the current query so results update in place.
     connect(typeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+        settings.setValue(QStringLiteral("search/contentType"),
+            typeComboBox->currentData().toString());
+        settings.sync();
         if (!currentSearchQuery_.isEmpty())
             performSearch(currentSearchQuery_);
     });
@@ -901,15 +936,6 @@ void MainWindow::addVerifiedSourceResult(
     if (!normalized.added.isValid())
         normalized.added = QDateTime::currentDateTimeUtc();
 
-    // The current strict-source contract requires a real release-specific Video
-    // field before a result is emitted. File-extension classification cannot run
-    // until Stage 14 resolves the .torrent/BEP 9 metadata, so classify that
-    // verified row as Video now instead of incorrectly filtering it as Unknown.
-    if (normalized.contentType == rats::domain::ContentType::Unknown
-        && !normalized.info.value(QStringLiteral("video")).toString().trimmed().isEmpty()) {
-        normalized.contentType = rats::domain::ContentType::Video;
-    }
-
     Torrent torrent = normalized;
     if (app_->indexing()) {
         const auto inserted = app_->indexing()->insert(normalized);
@@ -1213,10 +1239,11 @@ void MainWindow::performSearch(const QString& query)
     // Local index, P2P search and DHT-only hits cannot enter this table because
     // they do not prove a concrete release page.
     const QString sortKey = sortComboBox->currentData().toString();
+    const QString contentType = typeComboBox->currentData().toString();
     if (rutor)
-        rutor->search(trimmed, 50, sortKey);
+        rutor->search(trimmed, 50, sortKey, contentType);
     if (rutracker)
-        rutracker->search(trimmed, 50, sortKey);
+        rutracker->search(trimmed, 50, sortKey, contentType);
 }
 
 void MainWindow::updateStatusBar()
@@ -2685,8 +2712,7 @@ void MainWindow::loadSettings()
 
     if (resultsTableView) {
         QHeaderView* header = resultsTableView->horizontalHeader();
-        if (s.contains("search/headerState"))
-            header->restoreState(s.value("search/headerState").toByteArray());
+        s.remove(QStringLiteral("search/headerState"));
 
         if (s.contains("search/headerSortColumn")) {
             const int column = s.value("search/headerSortColumn").toInt();
@@ -2703,9 +2729,10 @@ void MainWindow::loadSettings()
         verticalSplitter->restoreState(s.value("splitters/vertical").toByteArray());
 
     if (typeComboBox) {
-        const int index = typeComboBox->findData(s.value("search/contentType", QString()).toString());
-        if (index >= 0)
-            typeComboBox->setCurrentIndex(index);
+        const QString savedType
+            = s.value(QStringLiteral("search/contentType"), QString()).toString();
+        const int index = typeComboBox->findData(savedType);
+        typeComboBox->setCurrentIndex(index >= 0 ? index : 0);
     }
     if (sortComboBox) {
         const int index = sortComboBox->findData(s.value("search/order", QStringLiteral("seeders_desc")).toString());
@@ -2754,7 +2781,6 @@ void MainWindow::saveSettings()
 
     if (resultsTableView) {
         QHeaderView* header = resultsTableView->horizontalHeader();
-        s.setValue("search/headerState", header->saveState());
         s.setValue("search/headerSortColumn", header->sortIndicatorSection());
         s.setValue("search/headerSortOrder", static_cast<int>(header->sortIndicatorOrder()));
     }

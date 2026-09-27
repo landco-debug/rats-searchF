@@ -32,7 +32,9 @@ public:
     static bool applyDetailPage(
         domain::Torrent& torrent, const QByteArray& rawData, const QUrl& finalUrl);
 
-    // Strict admission rule used by the source-first architecture.
+    // Type-aware strict admission rule. Video keeps the rich
+    // Quality+Video+Audio contract; non-video types use exact provenance plus
+    // their relevant technical/release description.
     static bool isStrictComplete(const domain::Torrent& torrent);
 
 private:

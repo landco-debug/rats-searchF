@@ -30,7 +30,8 @@ public:
     ~RutorSearchClient() override;
 
     void search(const QString& query, int limit = 50,
-        const QString& sortKey = QStringLiteral("seeders_desc"));
+        const QString& sortKey = QStringLiteral("seeders_desc"),
+        const QString& contentType = QString());
     void cancel();
 
 signals:
@@ -47,6 +48,7 @@ private:
 
     void fetchSearchPage(const QUrl& url, int generation, bool mirrorRetried);
     void processQueue(int generation);
+    void fetchTypeProbe(DetailJob job, int generation, const QUrl& torrentUrl, bool mirrorRetried = false);
     void fetchDetail(DetailJob job, int generation);
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
@@ -66,6 +68,7 @@ private:
     bool finishedEmitted_ = true;
     QString currentQuery_;
     QString currentSortKey_;
+    QString currentContentType_;
 
     static constexpr int kTimeoutMs = 15000;
     static constexpr int kMaxConcurrentDetails = 4;

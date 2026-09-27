@@ -389,3 +389,30 @@ Next validation:
 - Video must return the same valid strict video releases rather than an empty table;
 - С/Л headers must be compact and visibly green/red;
 - Help and Settings must contain no update-check control.
+
+
+### Stage 16 — authoritative type filters, Latin S/L and immediate state persistence
+
+Commit message: `fix: make strict source type filters authoritative`.
+
+Regression found in Stage 15:
+- source strict-completeness was still video-only, so Audio/Books/Games/Software/etc. were rejected before the UI filter could see them;
+- MainWindow additionally forced rows carrying Video metadata to Video;
+- Cyrillic С/Л were used instead of standard Latin S/L, and native macOS headers ignored model ForegroundRole colours;
+- type selection was only guaranteed to persist during orderly window shutdown;
+- old saved QHeaderView geometry could restore wide pre-compact columns.
+
+Implemented:
+- selected type is passed into both strict source clients; MainWindow no longer force-labels results as Video;
+- Rutor typed searches download the exact source .torrent from the same row, verify its info-hash, classify from the real file list, and only matching types proceed to exact detail-page verification;
+- typed Rutor results retain that verified file list for immediate Files-panel display;
+- RuTracker.RU rows capture sourceForumId and map public forum categories to Video/Audio/Books/Games/Software; supported typed queries send those exact f[] forum IDs to tracker.php and validate the returned row type again;
+- strict completeness is type-aware: Video still requires Quality+Video+Audio, Audio requires exact provenance + substantial description + concrete audio technical fields, other non-video types require exact provenance + substantial release-specific text;
+- audio parsing includes Format/Формат, Codec/Кодек, Bitrate/Битрейт and Rip type/Тип рипа;
+- Latin S/L are drawn by a custom macOS-safe header renderer: S green, L red; positive seeder values are green and positive leecher values red;
+- content-type selection is written to QSettings immediately; invalid/missing state restores All types;
+- stale search-header geometry is discarded so compact widths survive upgrades.
+
+Tests cover Rutor strict audio, RuTracker audio forum query, RuTracker forum-to-type mapping, and strict RuTracker audio without fake video fields.
+
+Identity invariants remain unchanged: exact source page and exact info-hash are mandatory; no title-only provenance is accepted.

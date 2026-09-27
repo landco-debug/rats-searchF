@@ -13,6 +13,7 @@ private slots:
     void buildsRutorSearchUrl();
     void searchRowCarriesExactProvenance();
     void detailPageVerifiesSameHashAndRichReleaseInfo();
+    void audioDetailPageIsStrictWithoutVideo();
     void mismatchedDetailHashIsRejected();
     void incompleteDetailPageIsNotStrict();
 };
@@ -96,6 +97,33 @@ void TestRutorSource::detailPageVerifiesSameHashAndRichReleaseInfo()
     QVERIFY(!t.info.value(QStringLiteral("quality")).toString().isEmpty());
     QVERIFY(!t.info.value(QStringLiteral("video")).toString().isEmpty());
     QCOMPARE(t.info.value(QStringLiteral("audioTracks")).toArray().size(), 2);
+    QVERIFY(RutorSource::isStrictComplete(t));
+}
+
+void TestRutorSource::audioDetailPageIsStrictWithoutVideo()
+{
+    Torrent t;
+    t.hash = kHash;
+    t.name = QStringLiteral("Sade - Diamond Life (1984) [FLAC]");
+    t.contentType = rats::domain::ContentType::Audio;
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
+    t.info[QStringLiteral("sourceUrl")] = QStringLiteral("https://rutor.info/torrent/99/sade-diamond-life");
+    const QByteArray html = R"(
+      <table id="details"><tbody>
+        <tr><td>Исполнитель</td><td>Sade</td></tr>
+        <tr><td>Альбом</td><td>Diamond Life</td></tr>
+        <tr><td>Формат</td><td>FLAC</td></tr>
+        <tr><td>Битрейт</td><td>Lossless</td></tr>
+        <tr><td>Тип рипа</td><td>tracks + .cue</td></tr>
+        <tr><td>Описание</td><td>Exact album release with a complete track listing, rip provenance,
+        lossless audio format, cue sheet information and edition notes. This text is intentionally long enough
+        to prove that a concrete music release can be strict-complete without fake video fields.</td></tr>
+      </tbody></table>
+      <a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567">magnet</a>)";
+    QVERIFY(RutorSource::applyDetailPage(t, html,
+        QUrl(QStringLiteral("https://rutor.info/torrent/99/sade-diamond-life"))));
+    QVERIFY(t.info.value(QStringLiteral("video")).toString().isEmpty());
+    QVERIFY(t.info.value(QStringLiteral("audioTracks")).toArray().size() >= 2);
     QVERIFY(RutorSource::isStrictComplete(t));
 }
 

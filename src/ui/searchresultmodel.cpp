@@ -1,7 +1,6 @@
 #include "searchresultmodel.h"
 #include "domain/content.h"
 #include "format.h"
-#include "theme.h"
 #include <QDateTime>
 #include <QHash>
 #include <QPair>
@@ -107,24 +106,13 @@ QVariant SearchResultModel::headerData(int section, Qt::Orientation orientation,
         case SizeColumn:
             return tr("Size");
         case SeedersColumn:
-            return QStringLiteral("С");
         case LeechersColumn:
-            return QStringLiteral("Л");
+            return QString();
         case DateColumn:
             return tr("Date");
         default:
             return QVariant();
         }
-    }
-
-    // Conventional torrent shorthand: seeders are green, leechers are red.
-    // Use the shared theme tokens so light/dark mode stay consistent.
-    if (role == Qt::ForegroundRole) {
-        const auto& theme = rats::ui::Theme::instance();
-        if (section == SeedersColumn)
-            return theme.color(QLatin1String("success"));
-        if (section == LeechersColumn)
-            return theme.color(QLatin1String("danger"));
     }
 
     if (role == Qt::TextAlignmentRole
