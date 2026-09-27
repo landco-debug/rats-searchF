@@ -31,6 +31,7 @@
 #include "net/crawler.h"
 #include "net/p2p_transport.h"
 #include "net/rutor_search_client.h"
+#include "net/megapeer_search_client.h"
 #include "net/rutracker_ru_search_client.h"
 #include "net/torrent_engine.h"
 #include "peer/peer_api.h"
@@ -885,6 +886,18 @@ void MainWindow::connectPeerSignals()
             });
     }
 
+    if (auto* source = app_->megaPeerSearch()) {
+        connect(source, &rats::net::MegaPeerSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::MegaPeerSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("MegaPeer"), rejected, error);
+            });
+    }
+
     // Peer single-torrent replies are still useful for an already selected
     // verified result (for example to obtain its file list). Peer SEARCH replies
     // are intentionally not connected to the Search Results model anymore.
@@ -1221,9 +1234,12 @@ void MainWindow::performSearch(const QString& query)
 
     auto* rutor = app_->rutorSearch();
     auto* rutracker = app_->ruTrackerRuSearch();
+    auto* megapeer = app_->megaPeerSearch();
     if (rutor)
         ++strictSourcesPending_;
     if (rutracker)
+        ++strictSourcesPending_;
+    if (megapeer)
         ++strictSourcesPending_;
 
     if (strictSourcesPending_ == 0) {
@@ -1233,7 +1249,7 @@ void MainWindow::performSearch(const QString& query)
     }
 
     showStatusMessage(
-        tr("🔍 Searching verified releases on Rutor + RuTracker.RU…"), 0);
+        tr("🔍 Searching verified releases on Rutor + RuTracker.RU + MegaPeer…"), 0);
 
     // These are deliberately the ONLY discovery sources for Search Results.
     // Local index, P2P search and DHT-only hits cannot enter this table because
@@ -1244,6 +1260,8 @@ void MainWindow::performSearch(const QString& query)
         rutor->search(trimmed, 50, sortKey, contentType);
     if (rutracker)
         rutracker->search(trimmed, 50, sortKey, contentType);
+    if (megapeer)
+        megapeer->search(trimmed, 50, sortKey, contentType);
 }
 
 void MainWindow::updateStatusBar()
@@ -1696,14 +1714,15 @@ void MainWindow::requestTorrentFiles(const Torrent& torrent)
     fileMetadataLoadingHash_ = torrent.hash;
     filesWidget->setLoading(torrent.hash, torrent.name);
 
-    // Best path for Rutor: the SAME source search row that gave us the exact
-    // detail URL and info-hash also exposes a .torrent download. Parse that
-    // metainfo first, then accept it only if its computed hash is identical.
+    // Best path for exact sources that expose a direct .torrent: the SAME
+    // source row binds the detail URL and download URL. Parse the metainfo and
+    // accept it only if its computed hash is identical to the verified result.
     const QString provider
         = torrent.info.value(QStringLiteral("sourceProvider")).toString();
     const QUrl sourceTorrentUrl(
         torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
-    if (provider == QStringLiteral("rutor")
+    if ((provider == QStringLiteral("rutor")
+            || provider == QStringLiteral("megapeer"))
         && sourceTorrentUrl.isValid()
         && (sourceTorrentUrl.scheme() == QStringLiteral("https")
             || sourceTorrentUrl.scheme() == QStringLiteral("http"))

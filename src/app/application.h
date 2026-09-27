@@ -20,6 +20,7 @@ class TorrentEngine;
 class Crawler;
 class RutorSearchClient;
 class RuTrackerRuSearchClient;
+class MegaPeerSearchClient;
 } // namespace rats::net
 namespace rats::rest {
 class ApiRouter;
@@ -96,6 +97,7 @@ public:
     net::Crawler* crawler() const;
     net::RutorSearchClient* rutorSearch() const;
     net::RuTrackerRuSearchClient* ruTrackerRuSearch() const;
+    net::MegaPeerSearchClient* megaPeerSearch() const;
     service::IndexingService* indexing() const;
     service::SearchService* search() const;
     service::DownloadService* downloads() const;

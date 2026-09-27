@@ -67,6 +67,15 @@ QUrl verifiedExactSourceUrl(const QJsonObject& info)
         return url;
     }
 
+    if (provider == QStringLiteral("megapeer")) {
+        if (url.host().compare(
+                QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) != 0
+            || !url.path().startsWith(QStringLiteral("/torrent/"))) {
+            return {};
+        }
+        return url;
+    }
+
     return {};
 }
 
@@ -78,6 +87,8 @@ QString exactSourceDisplayName(const QJsonObject& info)
         return QStringLiteral("Rutor");
     if (provider == QStringLiteral("rutracker-ru"))
         return QStringLiteral("RuTracker.RU");
+    if (provider == QStringLiteral("megapeer"))
+        return QStringLiteral("MegaPeer");
     return QString();
 }
 

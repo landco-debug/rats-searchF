@@ -13,6 +13,7 @@
 #include "net/crawler.h"
 #include "net/rutor_search_client.h"
 #include "net/rutracker_ru_search_client.h"
+#include "net/megapeer_search_client.h"
 #include "net/p2p_transport.h"
 #include "net/swarm_scraper.h"
 #include "net/torrent_engine.h"
@@ -62,6 +63,7 @@ struct Application::Private {
     std::unique_ptr<net::TrackerSiteScraper> siteScraper;
     std::unique_ptr<net::RutorSearchClient> rutorSearch;
     std::unique_ptr<net::RuTrackerRuSearchClient> ruTrackerRuSearch;
+    std::unique_ptr<net::MegaPeerSearchClient> megaPeerSearch;
 
     // Services
     std::unique_ptr<service::FilterPolicy> filter;
@@ -128,6 +130,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
     d_->rutorSearch = std::make_unique<net::RutorSearchClient>();
     d_->ruTrackerRuSearch = std::make_unique<net::RuTrackerRuSearchClient>();
+    d_->megaPeerSearch = std::make_unique<net::MegaPeerSearchClient>();
 
     // --- Services ---------------------------------------------------------
     d_->filter = std::make_unique<service::FilterPolicy>();
@@ -304,6 +307,7 @@ void Application::stop()
     d_->crawler->stop();
     d_->rutorSearch->cancel();
     d_->ruTrackerRuSearch->cancel();
+    d_->megaPeerSearch->cancel();
     d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
@@ -357,6 +361,10 @@ net::RutorSearchClient* Application::rutorSearch() const
 net::RuTrackerRuSearchClient* Application::ruTrackerRuSearch() const
 {
     return d_->ruTrackerRuSearch.get();
+}
+net::MegaPeerSearchClient* Application::megaPeerSearch() const
+{
+    return d_->megaPeerSearch.get();
 }
 service::IndexingService* Application::indexing() const
 {

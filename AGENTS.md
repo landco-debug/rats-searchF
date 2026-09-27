@@ -459,3 +459,47 @@ Validation added:
 - Rutor native categories map Music/Games/Software/Books/Pictures/Video correctly;
 - MP3 release with `Формат/Кодек` + `Битрейт аудио` remains Audio and strict-complete;
 - RuTracker forum-based Audio evidence is retained and accepts MP3-style labels.
+
+
+### Stage 18 — public MegaPeer exact-source adapter
+
+Commit message: `feat: add public MegaPeer exact-source search`.
+
+Why this source:
+- MegaPeer is public and does not require account credentials for its ordinary
+  search/detail/torrent endpoints;
+- a search row carries a concrete `/torrent/<id>/...` details URL and concrete
+  `/download/<id>/...` .torrent URL, which lets Rats Search prove identity
+  without title matching;
+- release pages are rich enough for the existing Torrent Info contract
+  (quality/video/audio/subtitles/full description), while the .torrent supplies
+  the authoritative info-hash and immediate file list.
+
+Implemented:
+- Windows-1251 aware tracker text/query utilities without Qt5Compat/QTextCodec;
+- `MegaPeerSource` parses public browse rows, exact detail/download IDs,
+  size/S/L/date, and rich exact-page technical metadata;
+- `MegaPeerSearchClient` downloads the paired .torrent first, computes the real
+  info-hash with TorrentEngine, classifies from the real file list, then verifies
+  the concrete detail page exposes the same download ID;
+- selected Audio/Video/etc. filtering happens only after exact .torrent
+  classification and source-page category enrichment, so MP3/FLAC are not
+  excluded by movie-oriented metadata heuristics;
+- strict Video admission still requires quality + video + at least one audio
+  track; Audio requires concrete technical audio lines; other recognized types
+  require a substantial exact-page description;
+- Application owns/cancels the client; Search Results aggregates MegaPeer with
+  Rutor + public RuTracker.RU and still deduplicates by info-hash;
+- Torrent Details recognizes the verified MegaPeer URL and exposes only the exact
+  release page;
+- the Files panel can reuse MegaPeer's already verified direct .torrent URL
+  instead of falling back to BEP 9.
+
+Tests cover search URL construction, exact row coupling, rich MP3 metadata and
+rejection when a detail page does not expose the download ID paired with the
+search candidate.
+
+Preserved invariant:
+- no MegaPeer title-only result can enter Search Results; a candidate needs the
+  concrete page, concrete downloadable .torrent, computed info-hash and strict
+  exact-page release information.
