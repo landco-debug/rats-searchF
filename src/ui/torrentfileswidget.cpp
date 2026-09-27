@@ -119,6 +119,29 @@ void TorrentFilesWidget::setTorrent(const rats::domain::Torrent& torrent)
     setFiles(torrent.hash, torrent.name, files);
 }
 
+void TorrentFilesWidget::setLoading(const QString& hash, const QString& name)
+{
+    currentHash_ = hash;
+    currentName_ = name;
+    fileCount_ = 0;
+    filesTree_->clear();
+    infoLabel_->setText(tr("Loading torrent metadata…"));
+    show();
+}
+
+void TorrentFilesWidget::setError(
+    const QString& hash, const QString& name, const QString& message)
+{
+    currentHash_ = hash;
+    currentName_ = name;
+    fileCount_ = 0;
+    filesTree_->clear();
+    infoLabel_->setText(message.isEmpty()
+            ? tr("File list unavailable")
+            : tr("File list unavailable: %1").arg(message));
+    show();
+}
+
 bool TorrentFilesWidget::hasFiles() const
 {
     return fileCount_ > 0;
