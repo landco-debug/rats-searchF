@@ -65,10 +65,23 @@ bool looksLikeChallenge(const QString& html)
 
 RuTrackerRuSearchClient::RuTrackerRuSearchClient(QObject* parent)
     : QObject(parent)
-    , networkManager_(new QNetworkAccessManager(this))
 {
     resetMirrorCycle();
+#ifdef __APPLE__
+    // macOS uses one persistent WebKit transport for login, Cloudflare,
+    // searches and exact topic pages. Remove the obsolete plaintext credential
+    // preferences and old Qt-cookie snapshots left by Stages 25-32.
+    browser_ = std::make_unique<RuTrackerBrowser>();
+    browserMode_ = true;
+    QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    settings.remove(QStringLiteral("rutracker/username"));
+    settings.remove(QStringLiteral("rutracker/password"));
+    settings.remove(QStringLiteral("rutracker/sessions"));
+    settings.sync();
+#else
+    networkManager_ = new QNetworkAccessManager(this);
     resetCookieJar(false);
+#endif
 }
 
 RuTrackerRuSearchClient::~RuTrackerRuSearchClient()
@@ -259,11 +272,19 @@ bool RuTrackerRuSearchClient::tryNextMirror(
     mirrorIndex_ = next;
     activeMirrorBaseUrl_ = mirrorBaseUrls_.at(mirrorIndex_);
     authRetried_ = false;
-    resetCookieJar(true);
 
     qInfo() << "[RuTrackerRuSearchClient] switching mirror to"
             << activeMirrorBaseUrl_ << "after" << reason;
 
+#ifdef __APPLE__
+    if (browserMode_) {
+        // Keep mirror failover inside the same persistent WebKit transport.
+        fetchSearchPage(generation);
+        return true;
+    }
+#endif
+
+    resetCookieJar(true);
     if (authenticated_)
         fetchSearchPage(generation);
     else
@@ -274,6 +295,13 @@ bool RuTrackerRuSearchClient::tryNextMirror(
 void RuTrackerRuSearchClient::setCredentials(
     const QString& username, const QString& password)
 {
+#ifdef __APPLE__
+    // Kept only for API compatibility with shared application code. macOS no
+    // longer stores or uses tracker credentials outside WebKit.
+    Q_UNUSED(username);
+    Q_UNUSED(password);
+    return;
+#else
     const QString cleanUser = username.trimmed();
     if (cleanUser == username_ && password == password_)
         return;
@@ -288,19 +316,46 @@ void RuTrackerRuSearchClient::setCredentials(
     if (credentialsChanged)
         clearAllPersistedSessions();
 
-#ifdef __APPLE__
-    if (browser_)
-        browser_->cancel();
-    browserMode_ = false;
-#endif
     resetMirrorCycle();
     resetCookieJar(true);
+#endif
 }
 
 bool RuTrackerRuSearchClient::isConfigured() const
 {
+#ifdef __APPLE__
+    return true;
+#else
     return !username_.isEmpty() && !password_.isEmpty();
+#endif
 }
+
+#ifdef __APPLE__
+void RuTrackerRuSearchClient::reloginInBrowser()
+{
+    cancel();
+    resetMirrorCycle();
+    browserMode_ = true;
+    if (!browser_)
+        browser_ = std::make_unique<RuTrackerBrowser>();
+
+    emit browserAuthorizationChanged(false, tr("Clearing RuTracker browser session…"));
+    browser_->clearSession([this]() {
+        const QUrl loginUrl = urlOnActiveMirror(QStringLiteral("/forum/login.php"));
+        emit browserAuthorizationChanged(false, tr("Complete authorization in the RuTracker window."));
+        browser_->authorize(loginUrl,
+            [this](const QByteArray&, const QUrl&, const QString& error) {
+                if (!error.isEmpty()) {
+                    emit browserAuthorizationChanged(false,
+                        tr("RuTracker authorization failed: %1").arg(error));
+                    return;
+                }
+                emit browserAuthorizationChanged(true,
+                    tr("RuTracker browser session is authorized."));
+            });
+    });
+}
+#endif
 
 void RuTrackerRuSearchClient::cancel()
 {
@@ -350,18 +405,23 @@ void RuTrackerRuSearchClient::search(
         finishNow(generation, tr("Empty RuTracker search query."));
         return;
     }
-    if (!isConfigured()) {
-        finishNow(generation,
-            tr("RuTracker account is not configured in Settings > Indexer."));
-        return;
-    }
 
     qInfo() << "[RuTrackerRuSearchClient] search"
             << currentQuery_.left(80) << "limit" << requestedLimit_;
 
 #ifdef __APPLE__
-    if (browserMode_) {
-        fetchSearchPage(generation);
+    // macOS is browser-only. Never fall back to the old credential/QNetwork
+    // path, because it cannot share WebKit's Cloudflare/network fingerprint.
+    browserMode_ = true;
+    if (!browser_)
+        browser_ = std::make_unique<RuTrackerBrowser>();
+    resetMirrorCycle();
+    fetchSearchPage(generation);
+    return;
+#else
+    if (!isConfigured()) {
+        finishNow(generation,
+            tr("RuTracker account is not configured in Settings > Indexer."));
         return;
     }
 #endif
@@ -478,7 +538,11 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
             if (generation != generation_ || finishedEmitted_)
                 return;
             if (!error.isEmpty()) {
-                finishNow(generation, tr("RuTracker browser: %1").arg(error));
+                emit browserAuthorizationChanged(false,
+                    tr("RuTracker browser request failed: %1").arg(error));
+                tryNextMirror(generation,
+                    tr("%1 browser request failed: %2")
+                        .arg(activeMirrorBaseUrl_, error));
                 return;
             }
             handleSearchPage(generation, body, finalUrl);
@@ -525,7 +589,24 @@ void RuTrackerRuSearchClient::handleSearchPage(
         authenticated_ = false;
 #ifdef __APPLE__
         if (browserMode_) {
-            finishNow(generation, tr("RuTracker browser session was not authenticated."));
+            emit browserAuthorizationChanged(false,
+                tr("RuTracker authorization is required."));
+            const QUrl loginUrl = urlOnActiveMirror(QStringLiteral("/forum/login.php"));
+            browser_->authorize(loginUrl,
+                [this, generation](const QByteArray&, const QUrl&, const QString& error) {
+                    if (generation != generation_ || finishedEmitted_)
+                        return;
+                    if (!error.isEmpty()) {
+                        emit browserAuthorizationChanged(false,
+                            tr("RuTracker authorization failed: %1").arg(error));
+                        finishNow(generation,
+                            tr("RuTracker browser authorization failed: %1").arg(error));
+                        return;
+                    }
+                    emit browserAuthorizationChanged(true,
+                        tr("RuTracker browser session is authorized."));
+                    fetchSearchPage(generation);
+                });
             return;
         }
 #endif
@@ -555,6 +636,13 @@ void RuTrackerRuSearchClient::handleSearchPage(
                 .arg(activeMirrorBaseUrl_));
         return;
     }
+
+#ifdef __APPLE__
+    if (browserMode_ && hasTorrentTable) {
+        emit browserAuthorizationChanged(true,
+            tr("RuTracker browser session is authorized."));
+    }
+#endif
 
     const int candidateCap
         = qMin(100, qMax(requestedLimit_, requestedLimit_ * 2));
