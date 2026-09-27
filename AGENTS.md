@@ -853,6 +853,13 @@ Implemented:
   automatically falls back to `rutracker.org`; each mirror uses its own fresh
   cookie jar and the same current `/forum/login.php` + `/forum/tracker.php`
   paths;
+- current upstream reality (rechecked 2026-09-27): the maintained
+  qBittorrent RuTracker plugin warns that RuTracker enabled newer Cloudflare
+  protection in July 2026 which a plain HTTP client cannot reliably bypass
+  without a JS/browser engine. Mirror failover therefore improves ordinary
+  reachability but is not claimed to defeat a managed Cloudflare challenge;
+  this build detects that condition and reports it instead of misreporting an
+  empty result set;
 - login/search responses that are redirected back to login, challenged by
   captcha/anti-bot pages, or return unexpected non-tracker HTML now fail over to
   the next official mirror instead of silently returning zero rows;
