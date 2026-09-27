@@ -63,6 +63,15 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
 
         if (authoritativeSource) {
             existing.info = torrent.info;
+
+            // Exact-source adapters own the canonical release title as well as
+            // the info object. This also heals rows indexed by older RuTracker
+            // parsers that accidentally persisted only the first styled word
+            // of #topic-title (for example "Багровый" instead of the full
+            // release title).
+            if (!torrent.name.isEmpty() && torrent.name != existing.name)
+                existing.name = torrent.name;
+
             if (repository_->update(existing))
                 result.torrent = existing;
         } else {
