@@ -681,3 +681,63 @@ Changed:
 
 Result: typed Books/Audio/etc. should surface likely matches much earlier while
 the optimization cannot reduce recall compared with the pre-Stage-22 search.
+
+
+### Stage 25 — authenticated RuTracker current-site adapter
+
+Commit message: `feat: authenticate RuTracker exact-source search`.
+
+Why this stage exists:
+- runtime testing of Run #84 showed only Rutor and NNM-Club results;
+- re-checking current RuTracker integrations (Jackett/Prowlarr and the qBittorrent
+  search plugin) confirmed that RuTracker is semi-private: search/topic metadata
+  require a logged-in session;
+- the previous adapter also targeted the obsolete root-level
+  `rutracker.ru/tracker.php` shape, expected a magnet in the listing row and
+  decoded the page as UTF-8. Current RuTracker uses `/forum/tracker.php`,
+  Windows-1251 and resolves the info-hash from the authenticated topic page.
+
+Implemented:
+- Settings > Indexer now contains RuTracker username/password fields;
+- credentials are intentionally kept out of `rats.json` and therefore out of
+  the REST config API; this build stores them in the app-local QSettings
+  preferences and masks the password field in the UI;
+- Application loads those credentials at startup and updates the live client
+  immediately when Settings is saved;
+- RuTracker is included in a search only when both credentials are configured;
+- the client POSTs `login_username`, `login_password`, `login=Login` and
+  `redirect=index.php` to `https://rutracker.org/forum/login.php`, keeps the
+  resulting cookie jar for the app session and retries authentication once if a
+  later search response falls back to the login page;
+- authentication success accepts either a `bb_session` cookie or RuTracker's
+  logged-in page marker; captcha/browser-challenge failures are surfaced as an
+  explicit provider error instead of silently producing zero rows;
+- search now uses `https://rutracker.org/forum/tracker.php`;
+- current `trs-tr-<id>` listing rows are parsed using their concrete
+  `viewtopic.php?t=<id>` and `dl.php?t=<id>` provenance, without pretending
+  that a public listing already contains a trustworthy info-hash;
+- the exact authenticated topic page supplies the magnet/info-hash and must
+  still match the original topic id before its release description is trusted;
+- RuTracker Windows-1251 is decoded through the shared source decoder;
+- typed search is recall-safe: forum/category evidence only changes verification
+  priority; it is not an early rejection rule;
+- source classification prefers the live forum label over stale hard-coded
+  RuTracker forum-id tables;
+- detail concurrency is reduced to 2 authenticated topic requests.
+
+Security note for hand-off:
+- password persistence is currently QSettings, not macOS Keychain. This choice
+  keeps this functional test stage cross-platform and low-risk for build/runtime
+  regressions, but the value is locally recoverable from app preferences.
+  Keychain migration can be a later hardening stage after runtime acceptance.
+
+Validation added:
+- parser tests now use current RuTracker table/topic/download markup;
+- tests prove that the listing carries no fake hash, the exact topic magnet
+  completes identity, audio forum text classifies correctly, and a mismatched
+  topic URL is rejected.
+
+Next stage:
+- redesign MegaPeer to the verified detail-page-first flow: exact page -> magnet
+  info-hash -> .torrent only as a fallback, with lower request pressure and
+  visible network/provider failures.
