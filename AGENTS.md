@@ -900,6 +900,8 @@ Commits in this stage:
   `test: cover RuTracker mirror-aware search URLs`
 - `e323734a76fd1bcb078e021569f1c3a90536ccc5`
   `stage27: harden macOS WebKit bridge compilation`
+- `a7e77b4f2cf94c88572e48bbe3c4e3997f63b713`
+  `fix: keep Objective-C delegate declarations at global scope`
 
 Stage 25 correction for hand-off:
 - the Stage 25 notes saying the runtime always POSTs to `rutracker.org` with
