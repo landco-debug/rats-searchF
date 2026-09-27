@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QStringList>
 #include <QTime>
+#include <QUrlQuery>
 
 namespace rats::net {
 namespace {
@@ -100,11 +101,66 @@ QString relevantDescription(const QString& html, const QString& torrentName)
     return text.trimmed();
 }
 
-bool isMegaPeerUrl(const QUrl& url)
+int topicIdFromMegaPeerUrl(const QUrl& url)
 {
-    return url.isValid()
-        && url.host().compare(QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) == 0
-        && url.path().startsWith(QStringLiteral("/torrent/"));
+    if (!url.isValid()
+        || url.host().compare(QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) != 0) {
+        return 0;
+    }
+    const QRegularExpression topicRe(
+        QStringLiteral(R"(^/torrent/(\d+)(?:/|$))"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch topic = topicRe.match(url.path());
+    return topic.hasMatch() ? topic.captured(1).toInt() : 0;
+}
+
+bool findDirectTorrentLink(
+    const QString& html, const QUrl& baseUrl, QUrl* urlOut, int* idOut)
+{
+    if (urlOut)
+        *urlOut = {};
+    if (idOut)
+        *idOut = 0;
+
+    // Current MegaPeer uses /download/<id>/..., while older/current mirrors
+    // have also used download.php?id=<id> / download2.php?id=<id>. Accept
+    // either shape only when it is linked from this exact detail/search page.
+    const QRegularExpression pathRe(
+        QStringLiteral(
+            R"re(href\s*=\s*["']([^"']*/download/(\d+)(?:/[^"']*)?)["'])re"),
+        QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatch match = pathRe.match(html);
+    QString href;
+    int id = 0;
+    if (match.hasMatch()) {
+        href = match.captured(1);
+        id = match.captured(2).toInt();
+    } else {
+        const QRegularExpression phpRe(
+            QStringLiteral(
+                R"re(href\s*=\s*["']([^"']*/download(?:2)?\.php\?[^"']*\bid=(\d+)[^"']*)["'])re"),
+            QRegularExpression::CaseInsensitiveOption);
+        match = phpRe.match(html);
+        if (match.hasMatch()) {
+            href = match.captured(1);
+            id = match.captured(2).toInt();
+        }
+    }
+
+    if (href.isEmpty() || id <= 0)
+        return false;
+
+    const QUrl url = sourceparse::resolveUrl(baseUrl, href);
+    if (!url.isValid()
+        || url.host().compare(QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+
+    if (urlOut)
+        *urlOut = url;
+    if (idOut)
+        *idOut = id;
+    return true;
 }
 
 } // namespace
@@ -138,10 +194,6 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
             R"re(<a\b[^>]*href\s*=\s*["']([^"']*/torrent/(\d+)(?:/[^"']*)?)["'][^>]*>(.*?)</a>)re"),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
-    const QRegularExpression downloadRe(
-        QStringLiteral(
-            R"re(<a\b[^>]*href\s*=\s*["']([^"']*/download/(\d+)(?:/[^"']*)?)["'])re"),
-        QRegularExpression::CaseInsensitiveOption);
     const QRegularExpression cellRe(
         QStringLiteral(R"re(<td\b[^>]*>(.*?)</td>)re"),
         QRegularExpression::CaseInsensitiveOption
@@ -156,13 +208,11 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
     while (rows.hasNext() && out.size() < maxCandidates) {
         const QString row = rows.next().captured(1);
         const QRegularExpressionMatch detail = detailRe.match(row);
-        const QRegularExpressionMatch download = downloadRe.match(row);
-        if (!detail.hasMatch() || !download.hasMatch())
+        if (!detail.hasMatch())
             continue;
 
         const int topicId = detail.captured(2).toInt();
-        const int downloadId = download.captured(2).toInt();
-        if (topicId <= 0 || downloadId <= 0 || seen.contains(topicId))
+        if (topicId <= 0 || seen.contains(topicId))
             continue;
 
         domain::Torrent torrent;
@@ -172,9 +222,7 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
 
         const QUrl detailUrl
             = sourceparse::resolveUrl(pageUrl, detail.captured(1));
-        const QUrl torrentUrl
-            = sourceparse::resolveUrl(pageUrl, download.captured(1));
-        if (!detailUrl.isValid() || !torrentUrl.isValid())
+        if (topicIdFromMegaPeerUrl(detailUrl) != topicId)
             continue;
 
         QStringList cells;
@@ -204,12 +252,17 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
         QJsonObject info;
         info[QStringLiteral("sourceProvider")] = QStringLiteral("megapeer");
         info[QStringLiteral("sourceTopicId")] = topicId;
-        info[QStringLiteral("sourceDownloadId")] = downloadId;
         info[QStringLiteral("sourceUrl")] = detailUrl.toString();
-        info[QStringLiteral("sourceTorrentUrl")] = torrentUrl.toString();
         info[QStringLiteral("sourceVerified")] = false;
-        torrent.info = info;
 
+        QUrl torrentUrl;
+        int downloadId = 0;
+        if (findDirectTorrentLink(row, pageUrl, &torrentUrl, &downloadId)) {
+            info[QStringLiteral("sourceDownloadId")] = downloadId;
+            info[QStringLiteral("sourceTorrentUrl")] = torrentUrl.toString();
+        }
+
+        torrent.info = info;
         seen.insert(topicId);
         out.append(std::move(torrent));
     }
@@ -222,72 +275,70 @@ bool MegaPeerSource::applyDetailPage(
     if (rawData.isEmpty())
         return false;
 
-    QUrl sourceUrl = finalUrl;
-    if (!isMegaPeerUrl(sourceUrl))
-        sourceUrl = QUrl(torrent.info.value(QStringLiteral("sourceUrl")).toString());
-    if (!isMegaPeerUrl(sourceUrl))
-        return false;
-
     const int expectedTopic
         = torrent.info.value(QStringLiteral("sourceTopicId")).toInt();
-    const QRegularExpression topicRe(QStringLiteral(R"(/torrent/(\d+)(?:/|$))"));
-    const QRegularExpressionMatch topic = topicRe.match(sourceUrl.path());
-    if (!topic.hasMatch() || topic.captured(1).toInt() != expectedTopic)
+    if (expectedTopic <= 0)
         return false;
 
-    // The exact page must expose the same download id that was paired with this
-    // detail URL in the search row. This binds the detail page to the concrete
-    // search-row release before we trust either its magnet or the .torrent
-    // fallback URL.
+    const int finalTopic = topicIdFromMegaPeerUrl(finalUrl);
+    if (finalTopic > 0 && finalTopic != expectedTopic)
+        return false;
+
+    QUrl sourceUrl = finalTopic == expectedTopic
+        ? finalUrl
+        : QUrl(torrent.info.value(QStringLiteral("sourceUrl")).toString());
+    if (topicIdFromMegaPeerUrl(sourceUrl) != expectedTopic)
+        return false;
+
     const QString html = sourceparse::decodeTrackerText(rawData);
-    const int expectedDownload
-        = torrent.info.value(QStringLiteral("sourceDownloadId")).toInt();
-    const QRegularExpression downloadRe(
-        QStringLiteral(R"re(href\s*=\s*["'][^"']*/download/(\d+)(?:/[^"']*)?["'])re"),
-        QRegularExpression::CaseInsensitiveOption);
-    bool sameDownload = false;
-    auto downloads = downloadRe.globalMatch(html);
-    while (downloads.hasNext()) {
-        if (downloads.next().captured(1).toInt() == expectedDownload) {
-            sameDownload = true;
-            break;
-        }
-    }
-    if (!sameDownload)
-        return false;
+    QJsonObject info = torrent.info;
 
-    // Current MegaPeer detail pages expose a magnet. Prefer that exact-page
-    // identity proof so a normal search does not download a .torrent for every
-    // candidate. If the page has no magnet, a caller may pre-fill torrent.hash
-    // from the exact /download/<id> .torrent and call us again; the topic and
-    // download-id checks above still bind that fallback hash to this release.
+    QUrl pageTorrentUrl;
+    int pageDownloadId = 0;
+    if (findDirectTorrentLink(
+            html, sourceUrl, &pageTorrentUrl, &pageDownloadId)) {
+        const int expectedDownload
+            = info.value(QStringLiteral("sourceDownloadId")).toInt();
+        if (expectedDownload > 0 && pageDownloadId != expectedDownload)
+            return false;
+        info[QStringLiteral("sourceDownloadId")] = pageDownloadId;
+        info[QStringLiteral("sourceTorrentUrl")] = pageTorrentUrl.toString();
+    }
+
     const QRegularExpression magnetRe(
         QStringLiteral(R"(xt=urn:btih:([A-Fa-f0-9]{40}))"),
         QRegularExpression::CaseInsensitiveOption);
     const QRegularExpressionMatch magnet = magnetRe.match(html);
+    bool verified = false;
     if (magnet.hasMatch()) {
         const QString hash = infohash::normalize(magnet.captured(1));
         if (!infohash::isValid(hash))
             return false;
-        if (!torrent.hash.isEmpty() && torrent.hash != hash)
+        if (!torrent.hash.isEmpty()
+            && torrent.hash.compare(hash, Qt::CaseInsensitive) != 0) {
             return false;
+        }
         torrent.hash = hash;
-        torrent.info[QStringLiteral("identityEvidence")]
+        verified = true;
+        info[QStringLiteral("identityEvidence")]
             = QStringLiteral("detail-magnet");
-    } else if (!torrent.isValid()) {
-        return false;
-    } else {
-        torrent.info[QStringLiteral("identityEvidence")]
+    } else if (torrent.isValid()) {
+        // The client may have parsed the direct .torrent linked by this same
+        // exact page. Topic/download provenance was checked above.
+        verified = true;
+        info[QStringLiteral("identityEvidence")]
             = QStringLiteral("torrent-fallback");
+    } else {
+        info[QStringLiteral("identityEvidence")]
+            = QStringLiteral("pending-torrent-fallback");
     }
 
     const QString description = relevantDescription(html, torrent.name);
     if (description.isEmpty())
         return false;
 
-    QJsonObject info = torrent.info;
     info[QStringLiteral("sourceProvider")] = QStringLiteral("megapeer");
-    info[QStringLiteral("sourceVerified")] = true;
+    info[QStringLiteral("sourceVerified")] = verified;
     info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("description")] = description;
 
@@ -325,8 +376,11 @@ bool MegaPeerSource::isStrictComplete(const domain::Torrent& torrent)
     }
     if (!info.value(QStringLiteral("sourceVerified")).toBool())
         return false;
-    if (!isMegaPeerUrl(QUrl(info.value(QStringLiteral("sourceUrl")).toString())))
+    if (topicIdFromMegaPeerUrl(
+            QUrl(info.value(QStringLiteral("sourceUrl")).toString()))
+        != info.value(QStringLiteral("sourceTopicId")).toInt()) {
         return false;
+    }
 
     const QString description
         = info.value(QStringLiteral("description")).toString().trimmed();
