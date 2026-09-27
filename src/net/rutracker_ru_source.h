@@ -9,11 +9,12 @@
 
 namespace rats::net {
 
-// Public RuTracker.RU source-first parser.
+// Authenticated RuTracker exact-source parser.
 //
-// Search rows already contain BOTH an exact viewtopic.php?t=<id> link and a
-// magnet/info-hash. The detail page must repeat that same info-hash before its
-// release text is trusted.
+// The current tracker listing identifies a concrete topic and direct download,
+// but it does not expose a trustworthy info-hash in the row. Identity is
+// completed on the exact topic page: its magnet supplies the btih hash and the
+// same topic id must match the search candidate before any release text is used.
 class RuTrackerRuSource {
 public:
     static QUrl searchUrl(
