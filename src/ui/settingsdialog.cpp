@@ -6,6 +6,7 @@
 #include "autostartmanager.h"
 #include "common/logging.h"
 #include "rest/api_router.h"
+#include "net/rutracker_ru_search_client.h"
 #include <QApplication>
 
 #include <QApplication>
@@ -312,6 +313,30 @@ QWidget* SettingsDialog::createIndexerTab()
     indexerLayout->addRow(trackersCheck_);
 
     tabLayout->addWidget(indexerGroup);
+
+    // --- Authenticated tracker account ---
+    QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker account"));
+    QFormLayout* ruTrackerLayout = new QFormLayout(ruTrackerGroup);
+    ruTrackerLayout->setSpacing(10);
+
+    ruTrackerUsernameEdit_ = new QLineEdit();
+    ruTrackerUsernameEdit_->setPlaceholderText(tr("RuTracker username"));
+    ruTrackerLayout->addRow(tr("Username:"), ruTrackerUsernameEdit_);
+
+    ruTrackerPasswordEdit_ = new QLineEdit();
+    ruTrackerPasswordEdit_->setEchoMode(QLineEdit::Password);
+    ruTrackerPasswordEdit_->setPlaceholderText(tr("RuTracker password"));
+    ruTrackerLayout->addRow(tr("Password:"), ruTrackerPasswordEdit_);
+
+    QLabel* ruTrackerHint = new QLabel(
+        tr("RuTracker search is enabled only when both fields are set. "
+           "The password is stored in this app's local macOS preferences and "
+           "is not written to rats.json or exposed through the REST API."));
+    ruTrackerHint->setWordWrap(true);
+    ruTrackerHint->setObjectName("hintLabel");
+    ruTrackerLayout->addRow(ruTrackerHint);
+
+    tabLayout->addWidget(ruTrackerGroup);
 
     // --- Spider Performance ---
     QGroupBox* perfGroup = new QGroupBox(tr("Spider Performance"));
@@ -638,6 +663,12 @@ void SettingsDialog::loadSettings()
     trackersCheck_->setChecked(config_->trackersEnabled());
     walkIntervalSpin_->setValue(config_->spiderWalkInterval());
 
+    QSettings trackerSettings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    ruTrackerUsernameEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/username")).toString());
+    ruTrackerPasswordEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/password")).toString());
+
     // Filters
     maxFilesSpin_->setValue(config_->filtersMaxFiles());
     maxFilesSlider_->setValue(config_->filtersMaxFiles());
@@ -721,6 +752,13 @@ void SettingsDialog::saveSettings()
     config_->setIndexerEnabled(indexerCheck_->isChecked());
     config_->setTrackersEnabled(trackersCheck_->isChecked());
     config_->setSpiderWalkInterval(walkIntervalSpin_->value());
+
+    const QString ruTrackerUsername = ruTrackerUsernameEdit_->text().trimmed();
+    const QString ruTrackerPassword = ruTrackerPasswordEdit_->text();
+    settings.setValue(QStringLiteral("rutracker/username"), ruTrackerUsername);
+    settings.setValue(QStringLiteral("rutracker/password"), ruTrackerPassword);
+    if (auto* ruTracker = app_->ruTrackerRuSearch())
+        ruTracker->setCredentials(ruTrackerUsername, ruTrackerPassword);
 
     // Save Filters
     config_->setFiltersMaxFiles(maxFilesSpin_->value());
