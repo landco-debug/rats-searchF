@@ -103,8 +103,13 @@ private:
     QCheckBox* trackersCheck_;
 
     // Authenticated tracker settings
+#ifdef __APPLE__
+    QLabel* ruTrackerBrowserStatus_;
+    QPushButton* ruTrackerAuthorizeButton_;
+#else
     QLineEdit* ruTrackerUsernameEdit_;
     QLineEdit* ruTrackerPasswordEdit_;
+#endif
 
     // Performance settings
     QSpinBox* walkIntervalSpin_;
