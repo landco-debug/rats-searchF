@@ -138,7 +138,7 @@ bool findDirectTorrentLink(
     } else {
         const QRegularExpression phpRe(
             QStringLiteral(
-                R"re(href\s*=\s*["']([^"']*/download(?:2)?\.php\?[^"']*\bid=(\d+)[^"']*)["'])re"),
+                R"re(href\s*=\s*["']([^"']*download(?:2)?\.php\?[^"']*\bid=(\d+)[^"']*)["'])re"),
             QRegularExpression::CaseInsensitiveOption);
         match = phpRe.match(html);
         if (match.hasMatch()) {
@@ -150,7 +150,8 @@ bool findDirectTorrentLink(
     if (href.isEmpty() || id <= 0)
         return false;
 
-    const QUrl url = sourceparse::resolveUrl(baseUrl, href);
+    const QUrl url = sourceparse::resolveUrl(
+        baseUrl, sourceparse::decodeEntities(href));
     if (!url.isValid()
         || url.host().compare(QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) != 0) {
         return false;
