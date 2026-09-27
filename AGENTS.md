@@ -300,3 +300,21 @@ Important:
 Next stage:
 - macOS ARM runtime validation of Rutor + RuTracker.RU;
 - then add the next public source only if its exact info-hash can be proven from the concrete release payload.
+
+
+### Stage 13 — deterministic macOS test artifact revision
+
+Commit message: `ci: build macOS artifact from exact branch head`.
+
+Problem found while verifying the file handed to the user:
+- GitHub Actions `pull_request` jobs checked out GitHub's temporary PR merge ref;
+- run #71 therefore packaged `RatsSearch-macOS-ARM-dev-6421483.dmg`, where `6421483` was the temporary merge commit, not branch HEAD `282e25f...`;
+- although that merge contained the branch changes, the delivered file was not self-identifying as the exact working HEAD and could be mistaken for/stale against the requested build.
+
+Implemented for the Apple Silicon job:
+- checkout `github.event.pull_request.head.sha` on PR events, falling back to `github.sha` otherwise;
+- immediately compare `git rev-parse HEAD` with the expected source SHA and fail on mismatch;
+- name development DMGs `RatsSearch-macOS-ARM-head-<branch-head>.dmg`;
+- add `BUILD-REVISION.txt` at the DMG root containing the full source SHA.
+
+This stage changes CI/package provenance only; application behavior from Stages 7-12 is unchanged.
