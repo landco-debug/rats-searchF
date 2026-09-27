@@ -3,7 +3,9 @@
 #include "domain/content_classifier.h"
 #include "net/nnmclub_source.h"
 #include "net/torrent_engine.h"
+#include "net/source_parse_utils.h"
 
+#include <algorithm>
 #include <QDir>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -116,11 +118,29 @@ void NnmClubSearchClient::fetchSearchPage(int generation)
                 return;
             }
 
-            const QVector<domain::Torrent> candidates
+            QVector<domain::Torrent> candidates
                 = NnmClubSource::parseSearchPage(response, finalUrl,
                     qMin(120, qMax(requestedLimit_, requestedLimit_ * 3)));
+
+            // Typed searches used to verify every row in tracker order. For
+            // Books in particular that could mean dozens of unrelated
+            // .torrent+detail requests before an obvious PDF/FB2/EPUB release.
+            // Reorder only; exact admission is unchanged.
+            std::stable_sort(candidates.begin(), candidates.end(),
+                [this](const domain::Torrent& a, const domain::Torrent& b) {
+                    return sourceparse::contentTypeHintScore(
+                               a, currentContentType_)
+                        > sourceparse::contentTypeHintScore(
+                               b, currentContentType_);
+                });
+
             searchResolved_ = true;
             for (const domain::Torrent& torrent : candidates) {
+                if (sourceparse::hasAuthoritativeTypeMismatch(
+                        torrent, currentContentType_)) {
+                    ++rejected_;
+                    continue;
+                }
                 Job job;
                 job.torrent = torrent;
                 job.detailUrl = QUrl(torrent.info

@@ -29,6 +29,15 @@ qint64 parseSize(QString text);
 // still the fallback when a site does not expose a useful category.
 domain::ContentType contentTypeFromCategoryText(QString category);
 
+// Fast, non-authoritative prioritization for typed searches. It only changes
+// which exact candidates are verified first; final admission still depends on
+// source page/.torrent proof. An explicit source-category mismatch is the one
+// case that may be rejected before expensive detail/.torrent requests.
+int contentTypeHintScore(
+    const domain::Torrent& torrent, const QString& expectedType);
+bool hasAuthoritativeTypeMismatch(
+    const domain::Torrent& torrent, const QString& expectedType);
+
 // Populate the shared Torrent Info fields used by TorrentDetailsPanel:
 // quality, video, audioTracks and subtitles. The full exact-page description
 // must already be stored in torrent.info["description"].

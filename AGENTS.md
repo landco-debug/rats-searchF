@@ -590,3 +590,39 @@ Fixed:
 - no runtime/search behavior changed.
 
 This is a compile-only follow-up to the combined public-source implementation.
+
+
+### Stage 22 — typed-search latency without weakening exact verification
+
+Commit message: `perf: prioritize likely typed results before verification`.
+
+Observed on macOS after the four public sources were enabled:
+- `All types` could show an NNM-Club book quickly, while selecting `Books`
+  sometimes waited a very long time;
+- MegaPeer/NNM-Club typed clients still verified candidates in tracker order,
+  meaning every candidate cost an exact .torrent download + parse + detail-page
+  request before the type filter could reject it;
+- Rutor's coarse `Other` bucket similarly mixes books, music, games and
+  software.
+
+Implemented safely:
+- added a shared content-type *priority* score based on already-known
+  source-native type plus strong title hints (PDF/FB2/EPUB, MP3/FLAC, BDRip,
+  etc.);
+- the score never admits a result and never replaces the exact source/.torrent
+  verification path: it only changes which candidate is checked first;
+- an already recognized `contentTypeEvidence=source-category` mismatch may be
+  rejected before network-heavy verification because the tracker itself has
+  already classified that row;
+- NNM-Club, MegaPeer and Rutor queues are stable-sorted by that score for typed
+  searches;
+- NNM-Club therefore prioritizes obvious PDF/FB2/EPUB book rows even when the
+  forum title itself is too generic to map to Books;
+- All-types ordering is unchanged (all scores are zero when no type is selected).
+
+Validation:
+- regression test proves PDF/FB2/EPUB title hints prioritize Books;
+- regression test proves only explicit source-category mismatch is eligible for
+  early rejection.
+
+Identity/completeness invariants are unchanged.

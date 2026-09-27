@@ -3,6 +3,7 @@
 
 #include "domain/content.h"
 #include "net/nnmclub_source.h"
+#include "net/source_parse_utils.h"
 
 using rats::domain::Torrent;
 using rats::net::NnmClubSource;
@@ -14,6 +15,7 @@ private slots:
     void parsesExactSearchRow();
     void verifiesExactPublicTopicAndRichVideo();
     void rejectsWrongDownloadId();
+    void typedSearchHintsPrioritizeBooksSafely();
 };
 
 void TestNnmClubSource::buildsPublicSearchBody()
@@ -122,6 +124,28 @@ void TestNnmClubSource::rejectsWrongDownloadId()
     QVERIFY(!NnmClubSource::applyDetailPage(
         t, html, QUrl(QStringLiteral(
             "https://nnmclub.to/forum/viewtopic.php?t=777"))));
+}
+
+
+void TestNnmClubSource::typedSearchHintsPrioritizeBooksSafely()
+{
+    Torrent book;
+    book.name = QStringLiteral(
+        "History of Fortifications [PDF, FB2, EPUB]");
+    QCOMPARE(rats::net::sourceparse::contentTypeHintScore(
+        book, QStringLiteral("books")), 500);
+    QVERIFY(!rats::net::sourceparse::hasAuthoritativeTypeMismatch(
+        book, QStringLiteral("books")));
+
+    Torrent explicitVideo;
+    explicitVideo.name = QStringLiteral("Manual PDF");
+    explicitVideo.contentType = rats::domain::ContentType::Video;
+    explicitVideo.info[QStringLiteral("contentTypeEvidence")]
+        = QStringLiteral("source-category");
+    QVERIFY(rats::net::sourceparse::hasAuthoritativeTypeMismatch(
+        explicitVideo, QStringLiteral("books")));
+    QVERIFY(rats::net::sourceparse::contentTypeHintScore(
+        explicitVideo, QStringLiteral("books")) < 0);
 }
 
 QTEST_MAIN(TestNnmClubSource)

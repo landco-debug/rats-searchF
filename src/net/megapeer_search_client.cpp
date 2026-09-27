@@ -3,7 +3,9 @@
 #include "domain/content_classifier.h"
 #include "net/megapeer_source.h"
 #include "net/torrent_engine.h"
+#include "net/source_parse_utils.h"
 
+#include <algorithm>
 #include <QDir>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -110,9 +112,17 @@ void MegaPeerSearchClient::fetchSearchPage(int generation)
                 return;
             }
 
-            const QVector<domain::Torrent> candidates
+            QVector<domain::Torrent> candidates
                 = MegaPeerSource::parseSearchPage(body, finalUrl,
                     qMin(120, qMax(requestedLimit_, requestedLimit_ * 3)));
+            std::stable_sort(candidates.begin(), candidates.end(),
+                [this](const domain::Torrent& a, const domain::Torrent& b) {
+                    return sourceparse::contentTypeHintScore(
+                               a, currentContentType_)
+                        > sourceparse::contentTypeHintScore(
+                               b, currentContentType_);
+                });
+
             searchResolved_ = true;
             for (const domain::Torrent& torrent : candidates) {
                 Job job;

@@ -298,6 +298,131 @@ domain::ContentType contentTypeFromCategoryText(QString category)
     return domain::ContentType::Unknown;
 }
 
+
+namespace {
+
+bool containsAny(const QString& value, const QStringList& needles)
+{
+    for (const QString& needle : needles) {
+        if (value.contains(needle, Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+int contentTypeHintScore(
+    const domain::Torrent& torrent, const QString& expectedType)
+{
+    const domain::ContentType expected
+        = domain::contentTypeFromString(expectedType.trimmed());
+    if (expected == domain::ContentType::Unknown)
+        return 0;
+
+    if (torrent.contentType == expected)
+        return 10000;
+
+    if (torrent.contentType != domain::ContentType::Unknown) {
+        const QString evidence = torrent.info
+            .value(QStringLiteral("contentTypeEvidence")).toString();
+        return evidence == QStringLiteral("source-category") ? -10000 : -1000;
+    }
+
+    const QString name = torrent.name.toLower();
+    int score = 0;
+
+    switch (expected) {
+    case domain::ContentType::Books:
+        if (containsAny(name, {
+                QStringLiteral("pdf"), QStringLiteral("fb2"),
+                QStringLiteral("epub"), QStringLiteral("djvu"),
+                QStringLiteral("mobi"), QStringLiteral("azw3"),
+                QStringLiteral("cbr"), QStringLiteral("cbz"),
+                QStringLiteral("ebook"), QStringLiteral("книг"),
+                QStringLiteral("аудиокниг") }))
+            score += 500;
+        break;
+    case domain::ContentType::Audio:
+        if (containsAny(name, {
+                QStringLiteral("mp3"), QStringLiteral("flac"),
+                QStringLiteral("ape"), QStringLiteral("alac"),
+                QStringLiteral("wav"), QStringLiteral("aac"),
+                QStringLiteral("m4a"), QStringLiteral("ogg"),
+                QStringLiteral("opus"), QStringLiteral("lossless"),
+                QStringLiteral("24bit"), QStringLiteral("hi-res"),
+                QStringLiteral("дискограф"), QStringLiteral("саундтрек"),
+                QStringLiteral(" ost") }))
+            score += 500;
+        break;
+    case domain::ContentType::Video:
+        if (containsAny(name, {
+                QStringLiteral("bdrip"), QStringLiteral("bdremux"),
+                QStringLiteral("web-dl"), QStringLiteral("webrip"),
+                QStringLiteral("hdtv"), QStringLiteral("dvdrip"),
+                QStringLiteral("hdrip"), QStringLiteral("2160p"),
+                QStringLiteral("1080p"), QStringLiteral("720p"),
+                QStringLiteral("hevc"), QStringLiteral("h.265"),
+                QStringLiteral("h264"), QStringLiteral("h.264"),
+                QStringLiteral("av1") }))
+            score += 500;
+        break;
+    case domain::ContentType::Games:
+        if (containsAny(name, {
+                QStringLiteral("repack"), QStringLiteral("gog"),
+                QStringLiteral("steam"), QStringLiteral("ps4"),
+                QStringLiteral("ps5"), QStringLiteral("xbox"),
+                QStringLiteral("switch"), QStringLiteral("игра") }))
+            score += 350;
+        break;
+    case domain::ContentType::Software:
+        if (containsAny(name, {
+                QStringLiteral("portable"), QStringLiteral("macos"),
+                QStringLiteral("windows"), QStringLiteral("linux"),
+                QStringLiteral("x64"), QStringLiteral("arm64"),
+                QStringLiteral(".dmg"), QStringLiteral(".pkg"),
+                QStringLiteral("software"), QStringLiteral("софт") }))
+            score += 350;
+        break;
+    case domain::ContentType::Pictures:
+        if (containsAny(name, {
+                QStringLiteral("wallpaper"), QStringLiteral("обои"),
+                QStringLiteral("фото"), QStringLiteral("photo"),
+                QStringLiteral("raw"), QStringLiteral("jpeg"),
+                QStringLiteral("jpg"), QStringLiteral("png"),
+                QStringLiteral("psd") }))
+            score += 350;
+        break;
+    case domain::ContentType::Archive:
+        if (containsAny(name, {
+                QStringLiteral(".zip"), QStringLiteral(".rar"),
+                QStringLiteral(".7z"), QStringLiteral(".tar"),
+                QStringLiteral("archive"), QStringLiteral("архив") }))
+            score += 250;
+        break;
+    default:
+        break;
+    }
+
+    return score;
+}
+
+bool hasAuthoritativeTypeMismatch(
+    const domain::Torrent& torrent, const QString& expectedType)
+{
+    const domain::ContentType expected
+        = domain::contentTypeFromString(expectedType.trimmed());
+    if (expected == domain::ContentType::Unknown
+        || torrent.contentType == domain::ContentType::Unknown
+        || torrent.contentType == expected) {
+        return false;
+    }
+
+    return torrent.info
+               .value(QStringLiteral("contentTypeEvidence")).toString()
+        == QStringLiteral("source-category");
+}
+
 void populateTechnicalInfo(domain::Torrent& torrent)
 {
     QJsonObject info = torrent.info;

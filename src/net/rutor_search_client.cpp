@@ -3,7 +3,9 @@
 #include "net/rutor_source.h"
 #include "domain/content_classifier.h"
 #include "net/torrent_engine.h"
+#include "net/source_parse_utils.h"
 
+#include <algorithm>
 #include <QDebug>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -156,7 +158,20 @@ void RutorSearchClient::fetchSearchPage(
                 return;
             }
 
+            std::stable_sort(candidates.begin(), candidates.end(),
+                [this](const domain::Torrent& a, const domain::Torrent& b) {
+                    return sourceparse::contentTypeHintScore(
+                               a, currentContentType_)
+                        > sourceparse::contentTypeHintScore(
+                               b, currentContentType_);
+                });
+
             for (domain::Torrent& torrent : candidates) {
+                if (sourceparse::hasAuthoritativeTypeMismatch(
+                        torrent, currentContentType_)) {
+                    ++rejected_;
+                    continue;
+                }
                 if (queuedSearchHashes_.contains(torrent.hash))
                     continue;
                 queuedSearchHashes_.insert(torrent.hash);
