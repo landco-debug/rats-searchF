@@ -4,15 +4,30 @@
 #include "net/source_parse_utils.h"
 
 #include <algorithm>
+#include <QDateTime>
 #include <QDebug>
 #include <QNetworkAccessManager>
 #include <QNetworkCookie>
 #include <QNetworkCookieJar>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSettings>
 
 namespace rats::net {
 namespace {
+
+class SnapshotCookieJar final : public QNetworkCookieJar {
+public:
+    explicit SnapshotCookieJar(QObject* parent = nullptr)
+        : QNetworkCookieJar(parent)
+    {
+    }
+
+    QList<QNetworkCookie> snapshot() const
+    {
+        return allCookies();
+    }
+};
 
 QNetworkRequest requestFor(const QUrl& url)
 {
@@ -52,8 +67,8 @@ RuTrackerRuSearchClient::RuTrackerRuSearchClient(QObject* parent)
     : QObject(parent)
     , networkManager_(new QNetworkAccessManager(this))
 {
-    resetCookieJar();
     resetMirrorCycle();
+    resetCookieJar(false);
 }
 
 RuTrackerRuSearchClient::~RuTrackerRuSearchClient()
@@ -61,13 +76,141 @@ RuTrackerRuSearchClient::~RuTrackerRuSearchClient()
     cancel();
 }
 
-void RuTrackerRuSearchClient::resetCookieJar()
+QString RuTrackerRuSearchClient::sessionSettingsGroup(const QString& host) const
+{
+    return QStringLiteral("rutracker/sessions/%1").arg(host.toLower());
+}
+
+void RuTrackerRuSearchClient::resetCookieJar(bool restorePersisted)
 {
     if (!networkManager_)
         return;
+
     if (QNetworkCookieJar* old = networkManager_->cookieJar())
         old->deleteLater();
-    networkManager_->setCookieJar(new QNetworkCookieJar(networkManager_));
+
+    networkManager_->setCookieJar(new SnapshotCookieJar(networkManager_));
+    authenticated_ = false;
+
+    if (restorePersisted && isConfigured())
+        authenticated_ = restorePersistedSession();
+}
+
+bool RuTrackerRuSearchClient::restorePersistedSession()
+{
+    if (!networkManager_ || !isConfigured())
+        return false;
+
+    const QUrl base(activeMirrorBaseUrl_);
+    const QString host = base.host().toLower();
+    if (host.isEmpty())
+        return false;
+
+    QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    settings.beginGroup(sessionSettingsGroup(host));
+
+    const QString owner = settings.value(QStringLiteral("owner")).toString();
+    const QStringList encodedCookies
+        = settings.value(QStringLiteral("cookies")).toStringList();
+    settings.endGroup();
+
+    if (owner != username_ || encodedCookies.isEmpty())
+        return false;
+
+    QList<QNetworkCookie> restored;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (const QString& encoded : encodedCookies) {
+        const QByteArray raw = QByteArray::fromBase64(encoded.toLatin1());
+        const QList<QNetworkCookie> parsed = QNetworkCookie::parseCookies(raw);
+        for (const QNetworkCookie& cookie : parsed) {
+            if (!cookie.isSessionCookie()
+                && cookie.expirationDate().isValid()
+                && cookie.expirationDate().toUTC() <= now) {
+                continue;
+            }
+            restored.append(cookie);
+        }
+    }
+
+    if (restored.isEmpty()) {
+        clearPersistedSessionForActiveMirror();
+        return false;
+    }
+
+    const QUrl scope = urlOnActiveMirror(QStringLiteral("/forum/index.php"));
+    if (!networkManager_->cookieJar()->setCookiesFromUrl(restored, scope)) {
+        clearPersistedSessionForActiveMirror();
+        return false;
+    }
+
+    qInfo() << "[RuTrackerRuSearchClient] restored persisted session for"
+            << host << "cookies" << restored.size();
+    return true;
+}
+
+void RuTrackerRuSearchClient::persistActiveSession()
+{
+    if (!networkManager_ || !isConfigured())
+        return;
+
+    const QUrl base(activeMirrorBaseUrl_);
+    const QString host = base.host().toLower();
+    if (host.isEmpty())
+        return;
+
+    auto* jar = dynamic_cast<SnapshotCookieJar*>(networkManager_->cookieJar());
+    if (!jar)
+        return;
+
+    QStringList encodedCookies;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (const QNetworkCookie& cookie : jar->snapshot()) {
+        if (!cookie.isSessionCookie()
+            && cookie.expirationDate().isValid()
+            && cookie.expirationDate().toUTC() <= now) {
+            continue;
+        }
+        const QByteArray raw = cookie.toRawForm(QNetworkCookie::Full);
+        if (!raw.isEmpty())
+            encodedCookies.append(QString::fromLatin1(raw.toBase64()));
+    }
+
+    if (encodedCookies.isEmpty())
+        return;
+
+    QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    settings.beginGroup(sessionSettingsGroup(host));
+    settings.setValue(QStringLiteral("owner"), username_);
+    settings.setValue(QStringLiteral("cookies"), encodedCookies);
+    settings.setValue(QStringLiteral("savedAt"),
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    settings.endGroup();
+    settings.sync();
+
+    qInfo() << "[RuTrackerRuSearchClient] persisted session for"
+            << host << "cookies" << encodedCookies.size();
+}
+
+void RuTrackerRuSearchClient::clearPersistedSessionForActiveMirror()
+{
+    const QString host = QUrl(activeMirrorBaseUrl_).host().toLower();
+    if (host.isEmpty())
+        return;
+
+    QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    settings.beginGroup(sessionSettingsGroup(host));
+    settings.remove(QString());
+    settings.endGroup();
+    settings.sync();
+}
+
+void RuTrackerRuSearchClient::clearAllPersistedSessions()
+{
+    QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    settings.beginGroup(QStringLiteral("rutracker/sessions"));
+    settings.remove(QString());
+    settings.endGroup();
+    settings.sync();
 }
 
 void RuTrackerRuSearchClient::resetMirrorCycle()
@@ -105,13 +248,16 @@ bool RuTrackerRuSearchClient::tryNextMirror(
 
     mirrorIndex_ = next;
     activeMirrorBaseUrl_ = mirrorBaseUrls_.at(mirrorIndex_);
-    authenticated_ = false;
     authRetried_ = false;
-    resetCookieJar();
+    resetCookieJar(true);
 
     qInfo() << "[RuTrackerRuSearchClient] switching mirror to"
             << activeMirrorBaseUrl_ << "after" << reason;
-    authenticate(generation);
+
+    if (authenticated_)
+        fetchSearchPage(generation);
+    else
+        authenticate(generation);
     return true;
 }
 
@@ -122,11 +268,18 @@ void RuTrackerRuSearchClient::setCredentials(
     if (cleanUser == username_ && password == password_)
         return;
 
+    const bool hadCredentials = !username_.isEmpty() || !password_.isEmpty();
+    const bool credentialsChanged = hadCredentials
+        && (cleanUser != username_ || password != password_);
+
     username_ = cleanUser;
     password_ = password;
-    authenticated_ = false;
-    resetCookieJar();
+
+    if (credentialsChanged)
+        clearAllPersistedSessions();
+
     resetMirrorCycle();
+    resetCookieJar(true);
 }
 
 bool RuTrackerRuSearchClient::isConfigured() const
@@ -187,12 +340,15 @@ void RuTrackerRuSearchClient::search(
     qInfo() << "[RuTrackerRuSearchClient] search"
             << currentQuery_.left(80) << "limit" << requestedLimit_;
 
-    if (authenticated_)
+    if (authenticated_) {
         fetchSearchPage(generation);
-    else {
+    } else {
         resetMirrorCycle();
-        resetCookieJar();
-        authenticate(generation);
+        resetCookieJar(true);
+        if (authenticated_)
+            fetchSearchPage(generation);
+        else
+            authenticate(generation);
     }
 }
 
@@ -270,6 +426,7 @@ void RuTrackerRuSearchClient::authenticate(int generation)
             }
 
             authenticated_ = true;
+            persistActiveSession();
             qInfo() << "[RuTrackerRuSearchClient] authenticated on"
                     << activeMirrorBaseUrl_;
             fetchSearchPage(generation);
@@ -326,7 +483,8 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                 authenticated_ = false;
                 if (!authRetried_) {
                     authRetried_ = true;
-                    resetCookieJar();
+                    clearPersistedSessionForActiveMirror();
+                    resetCookieJar(false);
                     authenticate(generation);
                     return;
                 }
@@ -358,11 +516,14 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                             .arg(activeMirrorBaseUrl_));
                     return;
                 }
+                persistActiveSession();
                 searchPageResolved_ = true;
                 finishNow(generation,
                     tr("RuTracker returned no exact torrent rows for this query."));
                 return;
             }
+
+            persistActiveSession();
 
             std::stable_sort(candidates.begin(), candidates.end(),
                 [this](const domain::Torrent& a, const domain::Torrent& b) {
