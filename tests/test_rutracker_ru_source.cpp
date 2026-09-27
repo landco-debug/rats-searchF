@@ -16,6 +16,7 @@ private slots:
     void forumLabelClassifiesAudio();
     void detailPageCompletesIdentityFromExactMagnet();
     void audioDetailPageIsStrictWithoutVideo();
+    void sparseExactReleaseIsNotHiddenByFieldParsing();
     void wrongTopicPageIsRejected();
 };
 
@@ -170,6 +171,34 @@ void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()
     QCOMPARE(t.hash, kHash);
     QVERIFY(t.info.value(QStringLiteral("video")).toString().isEmpty());
     QVERIFY(t.info.value(QStringLiteral("audioTracks")).toArray().size() >= 2);
+    QVERIFY(RuTrackerRuSource::isStrictComplete(t));
+}
+
+
+void TestRuTrackerRuSource::sparseExactReleaseIsNotHiddenByFieldParsing()
+{
+    Torrent t;
+    t.name = QStringLiteral("Exact release with unusual labels");
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
+    t.info[QStringLiteral("sourceTopicId")] = 779;
+    t.info[QStringLiteral("sourceUrl")]
+        = QStringLiteral("https://rutracker.net/forum/viewtopic.php?t=779");
+
+    const QByteArray html = R"(
+      <h1 id="topic-title">Exact release with unusual labels</h1>
+      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef">magnet</a>
+      <div class="post_body">
+      Это точное описание конкретной раздачи с нестандартным оформлением
+      технических параметров. Здесь намеренно нет строк с обычными метками
+      Quality, Video или Audio, однако страница и magnet однозначно относятся
+      к выбранной теме и потому такая раздача не должна исчезать из выдачи.
+      </div><!--/post_body-->)";
+
+    QVERIFY(RuTrackerRuSource::applyDetailPage(
+        t, html, QUrl(QStringLiteral(
+            "https://rutracker.net/forum/viewtopic.php?t=779"))));
+    QCOMPARE(t.hash, kHash);
+    QVERIFY(t.info.value(QStringLiteral("sourceVerified")).toBool());
     QVERIFY(RuTrackerRuSource::isStrictComplete(t));
 }
 
