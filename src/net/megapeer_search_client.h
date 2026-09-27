@@ -8,6 +8,7 @@
 #include <QQueue>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 class QNetworkAccessManager;
@@ -47,7 +48,7 @@ private:
     void finishCandidate(Job job, int generation, bool detailApplied);
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
-    void recordNetworkFailure(const QString& context, const QString& error);
+    void recordNetworkIssue(const QString& issue);
 
     QNetworkAccessManager* networkManager_ = nullptr;
     QSet<QNetworkReply*> replies_;
@@ -58,18 +59,16 @@ private:
     int requestedLimit_ = 50;
     int accepted_ = 0;
     int rejected_ = 0;
-    int networkFailures_ = 0;
     bool searchResolved_ = false;
     bool finishedEmitted_ = true;
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
-    QString lastNetworkError_;
+    QStringList networkIssues_;
 
-    static constexpr int kTimeoutMs = 15000;
-    // Interactive search should not fan out four detail/.torrent requests per
-    // row against a public tracker. Two detail requests at a time are enough to
-    // keep results streaming without recreating crawler-like request pressure.
+    // Detail-first makes the common candidate one HTTP request rather than a
+    // .torrent + detail pair. Keep only two exact-page verifications in flight:
+    // enough for interactive streaming without crawler-like request pressure.
     static constexpr int kMaxConcurrent = 2;
 };
 
