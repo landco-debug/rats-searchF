@@ -32,6 +32,7 @@
 #include "net/p2p_transport.h"
 #include "net/rutor_search_client.h"
 #include "net/megapeer_search_client.h"
+#include "net/nnmclub_search_client.h"
 #include "net/rutracker_ru_search_client.h"
 #include "net/torrent_engine.h"
 #include "peer/peer_api.h"
@@ -898,6 +899,18 @@ void MainWindow::connectPeerSignals()
             });
     }
 
+    if (auto* source = app_->nnmClubSearch()) {
+        connect(source, &rats::net::NnmClubSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::NnmClubSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("NNM-Club"), rejected, error);
+            });
+    }
+
     // Peer single-torrent replies are still useful for an already selected
     // verified result (for example to obtain its file list). Peer SEARCH replies
     // are intentionally not connected to the Search Results model anymore.
@@ -1235,11 +1248,14 @@ void MainWindow::performSearch(const QString& query)
     auto* rutor = app_->rutorSearch();
     auto* rutracker = app_->ruTrackerRuSearch();
     auto* megapeer = app_->megaPeerSearch();
+    auto* nnmclub = app_->nnmClubSearch();
     if (rutor)
         ++strictSourcesPending_;
     if (rutracker)
         ++strictSourcesPending_;
     if (megapeer)
+        ++strictSourcesPending_;
+    if (nnmclub)
         ++strictSourcesPending_;
 
     if (strictSourcesPending_ == 0) {
@@ -1249,7 +1265,7 @@ void MainWindow::performSearch(const QString& query)
     }
 
     showStatusMessage(
-        tr("🔍 Searching verified releases on Rutor + RuTracker.RU + MegaPeer…"), 0);
+        tr("🔍 Searching verified releases on Rutor + RuTracker.RU + MegaPeer + NNM-Club…"), 0);
 
     // These are deliberately the ONLY discovery sources for Search Results.
     // Local index, P2P search and DHT-only hits cannot enter this table because
@@ -1262,6 +1278,8 @@ void MainWindow::performSearch(const QString& query)
         rutracker->search(trimmed, 50, sortKey, contentType);
     if (megapeer)
         megapeer->search(trimmed, 50, sortKey, contentType);
+    if (nnmclub)
+        nnmclub->search(trimmed, 50, sortKey, contentType);
 }
 
 void MainWindow::updateStatusBar()
@@ -1722,7 +1740,8 @@ void MainWindow::requestTorrentFiles(const Torrent& torrent)
     const QUrl sourceTorrentUrl(
         torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
     if ((provider == QStringLiteral("rutor")
-            || provider == QStringLiteral("megapeer"))
+            || provider == QStringLiteral("megapeer")
+            || provider == QStringLiteral("nnmclub"))
         && sourceTorrentUrl.isValid()
         && (sourceTorrentUrl.scheme() == QStringLiteral("https")
             || sourceTorrentUrl.scheme() == QStringLiteral("http"))

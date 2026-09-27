@@ -76,6 +76,16 @@ QUrl verifiedExactSourceUrl(const QJsonObject& info)
         return url;
     }
 
+    if (provider == QStringLiteral("nnmclub")) {
+        const QString host = url.host().toLower();
+        if ((host != QStringLiteral("nnmclub.to")
+                && host != QStringLiteral("www.nnmclub.to"))
+            || !url.path().endsWith(QStringLiteral("/forum/viewtopic.php"))) {
+            return {};
+        }
+        return url;
+    }
+
     return {};
 }
 
@@ -89,6 +99,8 @@ QString exactSourceDisplayName(const QJsonObject& info)
         return QStringLiteral("RuTracker.RU");
     if (provider == QStringLiteral("megapeer"))
         return QStringLiteral("MegaPeer");
+    if (provider == QStringLiteral("nnmclub"))
+        return QStringLiteral("NNM-Club");
     return QString();
 }
 

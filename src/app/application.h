@@ -21,6 +21,7 @@ class Crawler;
 class RutorSearchClient;
 class RuTrackerRuSearchClient;
 class MegaPeerSearchClient;
+class NnmClubSearchClient;
 } // namespace rats::net
 namespace rats::rest {
 class ApiRouter;
@@ -98,6 +99,7 @@ public:
     net::RutorSearchClient* rutorSearch() const;
     net::RuTrackerRuSearchClient* ruTrackerRuSearch() const;
     net::MegaPeerSearchClient* megaPeerSearch() const;
+    net::NnmClubSearchClient* nnmClubSearch() const;
     service::IndexingService* indexing() const;
     service::SearchService* search() const;
     service::DownloadService* downloads() const;

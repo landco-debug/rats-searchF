@@ -503,3 +503,50 @@ Preserved invariant:
 - no MegaPeer title-only result can enter Search Results; a candidate needs the
   concrete page, concrete downloadable .torrent, computed info-hash and strict
   exact-page release information.
+
+
+### Stage 19 — public NNM-Club exact-source adapter
+
+Commit message: `feat: add public NNM-Club exact-source search`.
+
+Scope:
+- integrate only the no-login NNM-Club surface; no credentials, cookies copied
+  from a browser, or Keychain/account UI are introduced;
+- public search explicitly requests `sds=4`, matching NNM's publicly
+  downloadable/freeleech rows, so every admitted candidate can provide the
+  actual .torrent without pretending a login-only release is usable.
+
+Implemented:
+- Windows-1251 POST body matching NNM's public `forum/tracker.php` search;
+- exact search-row parser binds `viewtopic.php?t=<topic>` to
+  `download.php?id=<download>`, captures forum/category, S/L, bytes and Unix
+  publish date;
+- source-native forum text is used as primary type evidence when recognizable;
+  exact .torrent file classification is the fallback and fixes ambiguous/unknown
+  forum labels;
+- the public .torrent is parsed before admission to compute the real info-hash
+  and populate the complete file tree immediately;
+- exact topic verification requires the same topic id and the same download id
+  originally paired in the search row;
+- the first post is isolated when possible and supplies the full release
+  description plus quality/video/audio/subtitle fields;
+- strict Video and Audio completeness uses the same rich-info contract as the
+  other exact sources; non-media recognized types require a substantial exact
+  release post;
+- Application/MainWindow aggregate NNM-Club alongside Rutor, RuTracker.RU and
+  MegaPeer, with the existing info-hash de-duplication;
+- Torrent Details accepts only the verified concrete NNM-Club topic URL;
+- Files can re-use the verified direct NNM .torrent URL before BEP 9 fallback.
+
+Tests cover public-search form flags/Windows-1251 encoding, exact row parsing,
+forum Audio classification, detailed Video extraction and rejection of a topic
+whose download id does not match the search candidate.
+
+Combined public exact-source set after Stage 19:
+- Rutor
+- RuTracker.RU public
+- MegaPeer public
+- NNM-Club public/no-login subset
+
+Semi-private/private trackers remain intentionally excluded until a separate
+credential/Keychain design is explicitly requested.
