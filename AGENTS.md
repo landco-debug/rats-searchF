@@ -890,3 +890,38 @@ Handoff:
 - do not merge until the user confirms RuTracker/MegaPeer presence and clickable
   sorting on macOS Sequoia.
 
+### Stage 28 — force deterministic mouse sorting for the custom macOS search header
+
+Runtime finding:
+- Stage 27 correctly set `sectionsClickable=true`, but the user confirmed on
+  macOS Sequoia that clicking Name / Size / S / L / Date still did not reorder
+  the result table;
+- the remaining weak point was relying on QTableView/QHeaderView's implicit
+  click-to-sort behavior after replacing the stock header with our custom
+  `SearchHeaderView`.
+
+Commit:
+- `406f5a1fb8ffb02663d06fa9376c482cfbbefa4c`
+  `fix: force deterministic header click sorting on macOS`
+
+Implemented:
+- `SearchHeaderView` now tracks a real left-button press/release on one header
+  section and calculates the requested sort order itself;
+- a short click on Name starts A-Z; a short click on Size, Seeders, Leechers or
+  Date starts descending; repeated clicks toggle the direction;
+- the custom header calls an explicit sort handler wired directly to
+  `SearchResultModel::sort(column, order)`, so sorting no longer depends on
+  Qt/macOS implicit header wiring;
+- normal QHeaderView event handling is still called first, so resize behavior and
+  native drawing remain intact;
+- small drag detection prevents a column-edge resize gesture from being treated
+  as a sort click;
+- the visible sort indicator is updated to the exact order applied to the model.
+
+Handoff:
+- branch: `stage28-clickable-sorting`;
+- parent: Stage 27 head
+  `c631eb849b04024ba442694aa52242a71055dfc8`;
+- after CI passes, validate on macOS Sequoia by clicking each of the five visible
+  result headers twice and confirming both directions.
+
