@@ -7,6 +7,7 @@
 #include <QQueue>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 class QNetworkAccessManager;
@@ -16,9 +17,10 @@ namespace rats::net {
 
 // Authenticated asynchronous RuTracker exact-source client.
 //
-// RuTracker search and topic metadata are account-gated. The client logs in
-// once per session, keeps the resulting cookies in its QNetworkAccessManager,
+// RuTracker search and topic metadata are account-gated. The client logs in on
+// an official mirror, keeps that mirror's cookies in its QNetworkAccessManager,
 // then verifies every result on its concrete topic page before emitting it.
+// Official mirrors are tried automatically because reachability differs by ISP.
 class RuTrackerRuSearchClient : public QObject {
     Q_OBJECT
 
@@ -47,6 +49,9 @@ private:
 
     void authenticate(int generation);
     void resetCookieJar();
+    void resetMirrorCycle();
+    bool tryNextMirror(int generation, const QString& reason);
+    QUrl urlOnActiveMirror(const QString& path) const;
     void fetchSearchPage(int generation);
     void processQueue(int generation);
     void fetchDetail(DetailJob job, int generation);
@@ -71,6 +76,13 @@ private:
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
+    QStringList mirrorBaseUrls_ {
+        QStringLiteral("https://rutracker.net"),
+        QStringLiteral("https://rutracker.org")
+    };
+    int mirrorIndex_ = 0;
+    QString activeMirrorBaseUrl_ = QStringLiteral("https://rutracker.net");
+    QString lastMirrorError_;
 
     static constexpr int kTimeoutMs = 20000;
     static constexpr int kMaxConcurrentDetails = 2;
