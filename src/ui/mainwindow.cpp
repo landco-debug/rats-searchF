@@ -79,6 +79,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -110,6 +111,8 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
+#include <functional>
+
 using rats::Result;
 using rats::domain::SearchHit;
 using rats::domain::Torrent;
@@ -120,8 +123,65 @@ namespace codec = rats::domain::codec;
 namespace {
 class SearchHeaderView final : public QHeaderView {
 public:
-    explicit SearchHeaderView(QWidget* parent) : QHeaderView(Qt::Horizontal, parent) {}
+    using SortHandler = std::function<void(int, Qt::SortOrder)>;
+
+    explicit SearchHeaderView(QWidget* parent)
+        : QHeaderView(Qt::Horizontal, parent)
+    {
+        setSectionsClickable(true);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    void setSortHandler(SortHandler handler)
+    {
+        sortHandler_ = std::move(handler);
+    }
+
 protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            pressPos_ = event->position().toPoint();
+            pressSection_ = logicalIndexAt(pressPos_);
+            pressSortSection_ = sortIndicatorSection();
+            pressSortOrder_ = sortIndicatorOrder();
+        }
+        QHeaderView::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        const QPoint releasePos = event->position().toPoint();
+        const int releaseSection = logicalIndexAt(releasePos);
+
+        // Let Qt finish its normal header bookkeeping/resizing first. We then
+        // apply a deterministic sort from the state captured on mouse press.
+        // This keeps sorting reliable even on macOS styles where replacing the
+        // stock QTableView header can leave the native click-to-sort wiring
+        // visually active but functionally inert.
+        QHeaderView::mouseReleaseEvent(event);
+
+        if (event->button() == Qt::LeftButton
+            && pressSection_ >= 0
+            && releaseSection == pressSection_
+            && (releasePos - pressPos_).manhattanLength() <= 4) {
+            Qt::SortOrder order = Qt::DescendingOrder;
+            if (pressSortSection_ == releaseSection) {
+                order = pressSortOrder_ == Qt::AscendingOrder
+                    ? Qt::DescendingOrder
+                    : Qt::AscendingOrder;
+            } else if (releaseSection == SearchResultModel::NameColumn) {
+                order = Qt::AscendingOrder;
+            }
+
+            setSortIndicator(releaseSection, order);
+            if (sortHandler_)
+                sortHandler_(releaseSection, order);
+        }
+
+        pressSection_ = -1;
+    }
+
     void paintSection(QPainter* painter, const QRect& rect, int logicalIndex) const override
     {
         QHeaderView::paintSection(painter, rect, logicalIndex);
@@ -143,6 +203,13 @@ protected:
             seeders ? QStringLiteral("S") : QStringLiteral("L"));
         painter->restore();
     }
+
+private:
+    SortHandler sortHandler_;
+    QPoint pressPos_;
+    int pressSection_ = -1;
+    int pressSortSection_ = -1;
+    Qt::SortOrder pressSortOrder_ = Qt::DescendingOrder;
 };
 } // namespace
 
@@ -340,15 +407,23 @@ void MainWindow::setupUi()
     resultsTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     resultsTableView->setAlternatingRowColors(true);
 
-    // A freshly constructed QHeaderView is not clickable by default. The
-    // custom SearchHeaderView replaced QTableView's stock header, so visual
-    // sort indicators were restored but mouse clicks never changed them.
-    // Explicitly enable clickable sections before enabling table sorting.
-    QHeaderView* searchHeader = resultsTableView->horizontalHeader();
-    searchHeader->setSectionsClickable(true);
+    // Keep QTableView's built-in sorting connection, but also wire the custom
+    // header directly to the model. Stage 27 only enabled sectionsClickable;
+    // on macOS the custom-painted header still did not sort when clicked.
+    // This explicit path makes Name/Size/S/L/Date sorting independent of that
+    // platform-specific header behavior.
+    auto* searchHeader = static_cast<SearchHeaderView*>(
+        resultsTableView->horizontalHeader());
     searchHeader->setSortIndicatorShown(true);
     searchHeader->setSortIndicatorClearable(false);
     resultsTableView->setSortingEnabled(true);
+    searchHeader->setSortHandler(
+        [this](int column, Qt::SortOrder order) {
+            if (!searchResultModel)
+                return;
+            searchResultModel->sort(column, order);
+            resultsTableView->viewport()->update();
+        });
     searchHeader->setStretchLastSection(false);
     resultsTableView->verticalHeader()->setVisible(false);
     resultsTableView->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
