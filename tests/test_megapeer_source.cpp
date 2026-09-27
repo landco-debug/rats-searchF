@@ -97,12 +97,12 @@ static QByteArray richAudioPage(bool includeMagnet = true)
         : QByteArray();
     return QByteArray(R"(
       <html><body>
+       <table><tr><td>Категория</td><td><a href="/cat/94">Музыка</a></td></tr></table>
        <a href="/download/101/artist-album.torrent">torrent</a>)")
         + magnet
         + QByteArray(R"(
        <div>
         Информация о раздаче<br>
-        Категория: Музыка<br>
         Название: Album<br>
         Исполнитель: Artist<br>
         Формат/Кодек: MP3<br>
