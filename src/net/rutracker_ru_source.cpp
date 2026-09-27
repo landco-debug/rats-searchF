@@ -366,9 +366,13 @@ bool RuTrackerRuSource::applyDetailPage(
     if (expectedTopic <= 0)
         return false;
 
-    QUrl sourceUrl = finalUrl;
-    if (topicIdFromUrl(sourceUrl) != expectedTopic)
-        sourceUrl = QUrl(torrent.info.value(QStringLiteral("sourceUrl")).toString());
+    const int finalTopic = topicIdFromUrl(finalUrl);
+    if (finalTopic > 0 && finalTopic != expectedTopic)
+        return false;
+
+    QUrl sourceUrl = finalTopic == expectedTopic
+        ? finalUrl
+        : QUrl(torrent.info.value(QStringLiteral("sourceUrl")).toString());
     if (topicIdFromUrl(sourceUrl) != expectedTopic)
         return false;
 
