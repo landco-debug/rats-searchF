@@ -12,6 +12,7 @@ class TestRuTrackerRuSource : public QObject {
 
 private slots:
     void buildsAuthenticatedForumSearchUrl();
+    void usesRequestedOfficialMirror();
     void parsesCurrentExactSearchRowWithoutPretendingHashIsPublic();
     void forumLabelClassifiesAudio();
     void detailPageCompletesIdentityFromExactMagnet();
@@ -27,12 +28,27 @@ void TestRuTrackerRuSource::buildsAuthenticatedForumSearchUrl()
     const QUrl url = RuTrackerRuSource::searchUrl(
         QStringLiteral("Under Siege"), QStringLiteral("seeders_desc"));
     QCOMPARE(url.scheme(), QStringLiteral("https"));
-    QCOMPARE(url.host(), QStringLiteral("rutracker.org"));
+    QCOMPARE(url.host(), QStringLiteral("rutracker.net"));
     QCOMPARE(url.path(), QStringLiteral("/forum/tracker.php"));
 
     QUrlQuery query(url);
     QCOMPARE(query.queryItemValue(QStringLiteral("nm")), QStringLiteral("Under Siege"));
     QCOMPARE(query.queryItemValue(QStringLiteral("f[]")), QStringLiteral("-1"));
+}
+
+void TestRuTrackerRuSource::usesRequestedOfficialMirror()
+{
+    const QUrl url = RuTrackerRuSource::searchUrl(
+        QStringLiteral("Under Siege"), QStringLiteral("seeders_desc"),
+        QString(), QUrl(QStringLiteral("https://rutracker.org")));
+    QCOMPARE(url.scheme(), QStringLiteral("https"));
+    QCOMPARE(url.host(), QStringLiteral("rutracker.org"));
+    QCOMPARE(url.path(), QStringLiteral("/forum/tracker.php"));
+
+    const QUrl invalid = RuTrackerRuSource::searchUrl(
+        QStringLiteral("Under Siege"), QStringLiteral("seeders_desc"),
+        QString(), QUrl(QStringLiteral("https://example.com")));
+    QCOMPARE(invalid.host(), QStringLiteral("rutracker.net"));
 }
 
 void TestRuTrackerRuSource::parsesCurrentExactSearchRowWithoutPretendingHashIsPublic()
