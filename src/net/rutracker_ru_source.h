@@ -20,7 +20,8 @@ public:
     static QUrl searchUrl(
         const QString& query,
         const QString& sortKey = QStringLiteral("seeders_desc"),
-        const QString& contentType = QString());
+        const QString& contentType = QString(),
+        const QUrl& baseUrl = QUrl(QStringLiteral("https://rutracker.net")));
 
     static QVector<domain::Torrent> parseSearchPage(
         const QByteArray& rawData,
