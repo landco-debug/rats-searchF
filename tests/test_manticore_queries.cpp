@@ -285,7 +285,7 @@ void TestManticoreQueries::testMergeInfoSignals()
 
 void TestManticoreQueries::testVerifiedSourceReplacesStaleInfo()
 {
-    Torrent original = makeTorrent(770010, "Verified source replacement sample");
+    Torrent original = makeTorrent(770010, "Багровый");
     original.info = QJsonObject {
         { QStringLiteral("description"), QStringLiteral("old guessed description") },
         { QStringLiteral("rutrackerThreadId"), 999999 },
@@ -297,10 +297,12 @@ void TestManticoreQueries::testVerifiedSourceReplacesStaleInfo()
     QVERIFY(waitForTorrent(original.hash));
 
     Torrent verified = original;
+    verified.name = QStringLiteral(
+        "Багровый прилив / Crimson Tide (1995) BDRip 1080p");
     verified.info = QJsonObject {
-        { QStringLiteral("sourceProvider"), QStringLiteral("rutor") },
+        { QStringLiteral("sourceProvider"), QStringLiteral("rutracker-ru") },
         { QStringLiteral("sourceTopicId"), 471557 },
-        { QStringLiteral("sourceUrl"), QStringLiteral("https://rutor.info/torrent/471557/exact") },
+        { QStringLiteral("sourceUrl"), QStringLiteral("https://rutracker.org/forum/viewtopic.php?t=471557") },
         { QStringLiteral("sourceVerified"), true },
         { QStringLiteral("strictComplete"), true },
         { QStringLiteral("description"), QStringLiteral("exact Rutor release description") },
@@ -319,7 +321,9 @@ void TestManticoreQueries::testVerifiedSourceReplacesStaleInfo()
     QVERIFY(stored.has_value());
     QVERIFY(stored->info.value(QStringLiteral("sourceVerified")).toBool());
     QCOMPARE(stored->info.value(QStringLiteral("sourceUrl")).toString(),
-        QStringLiteral("https://rutor.info/torrent/471557/exact"));
+        QStringLiteral("https://rutracker.org/forum/viewtopic.php?t=471557"));
+    QCOMPARE(stored->name,
+        QStringLiteral("Багровый прилив / Crimson Tide (1995) BDRip 1080p"));
     QCOMPARE(stored->info.value(QStringLiteral("description")).toString(),
         QStringLiteral("exact Rutor release description"));
     QVERIFY2(!stored->info.contains(QStringLiteral("rutrackerThreadId")),
