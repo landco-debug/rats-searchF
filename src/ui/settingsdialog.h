@@ -106,6 +106,8 @@ private:
 #ifdef __APPLE__
     QLabel* ruTrackerBrowserStatus_;
     QPushButton* ruTrackerAuthorizeButton_;
+    QLabel* kinozalBrowserStatus_;
+    QPushButton* kinozalAuthorizeButton_;
 #else
     QLineEdit* ruTrackerUsernameEdit_;
     QLineEdit* ruTrackerPasswordEdit_;

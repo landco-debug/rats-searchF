@@ -21,6 +21,8 @@ QString sourceDisplayName(const QString& provider)
         return QStringLiteral("MegaPeer");
     if (provider == QStringLiteral("nnmclub"))
         return QStringLiteral("NNM-Club");
+    if (provider == QStringLiteral("kinozal"))
+        return QStringLiteral("Kinozal");
     return provider;
 }
 

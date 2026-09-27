@@ -33,6 +33,7 @@
 #include "net/rutor_search_client.h"
 #include "net/megapeer_search_client.h"
 #include "net/nnmclub_search_client.h"
+#include "net/kinozal_search_client.h"
 #include "net/rutracker_ru_search_client.h"
 #include "net/torrent_engine.h"
 #include "peer/peer_api.h"
@@ -1006,6 +1007,18 @@ void MainWindow::connectPeerSignals()
             });
     }
 
+    if (auto* source = app_->kinozalSearch()) {
+        connect(source, &rats::net::KinozalSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::KinozalSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("Kinozal"), rejected, error);
+            });
+    }
+
     // Peer single-torrent replies are still useful for an already selected
     // verified result (for example to obtain its file list). Peer SEARCH replies
     // are intentionally not connected to the Search Results model anymore.
@@ -1350,7 +1363,9 @@ void MainWindow::performSearch(const QString& query)
     auto* rutracker = app_->ruTrackerRuSearch();
     auto* megapeer = app_->megaPeerSearch();
     auto* nnmclub = app_->nnmClubSearch();
+    auto* kinozal = app_->kinozalSearch();
     const bool ruTrackerConfigured = rutracker && rutracker->isConfigured();
+    const bool kinozalConfigured = kinozal && kinozal->isConfigured();
 
     QStringList activeProviders;
     if (rutor) {
@@ -1368,6 +1383,10 @@ void MainWindow::performSearch(const QString& query)
     if (nnmclub) {
         ++strictSourcesPending_;
         activeProviders << QStringLiteral("NNM-Club");
+    }
+    if (kinozalConfigured) {
+        ++strictSourcesPending_;
+        activeProviders << QStringLiteral("Kinozal");
     }
 
     if (strictSourcesPending_ == 0) {
@@ -1395,6 +1414,8 @@ void MainWindow::performSearch(const QString& query)
         megapeer->search(trimmed, 50, sortKey, contentType);
     if (nnmclub)
         nnmclub->search(trimmed, 50, sortKey, contentType);
+    if (kinozalConfigured)
+        kinozal->search(trimmed, 50, sortKey, contentType);
 }
 
 void MainWindow::updateStatusBar()

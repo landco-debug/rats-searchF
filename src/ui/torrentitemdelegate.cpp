@@ -25,6 +25,8 @@ SourceBadgeStyle sourceBadgeStyle(const QString& provider)
         return { QStringLiteral("M"), QColor(QStringLiteral("#1976D2")) };
     if (provider == QStringLiteral("nnmclub"))
         return { QStringLiteral("N"), QColor(QStringLiteral("#00838F")) };
+    if (provider == QStringLiteral("kinozal"))
+        return { QStringLiteral("KZ"), QColor(QStringLiteral("#7B1FA2")) };
     return {};
 }
 

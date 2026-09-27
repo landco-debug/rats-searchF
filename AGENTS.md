@@ -1375,3 +1375,104 @@ Handoff:
   `Open exact RuTracker release`; clicking it must open that row's exact
   viewtopic.php?t=<sourceTopicId> page.
 
+### Stage 36 — Kinozal exact-source integration with persistent WebKit auth
+
+Pre-implementation availability re-check (2026-09-28):
+- maintained Jackett definitions list current Kinozal mirrors
+  `https://kinozal.me/` and `https://kinozal.guru/`; `.tv` is legacy;
+- Kinozal remains Windows-1251 and semi-private;
+- current login endpoint is still `takelogin.php`, but independent maintained
+  integrations measured Cloudflare Managed Challenge / HTTP 403 on login and
+  browse endpoints, so replaying credentials through plain Qt HTTP would repeat
+  the old RuTracker failure mode;
+- current live-capture fixtures confirm browse rows still expose one concrete
+  `details.php?id=<id>`, full release title, size, seeders, leechers, date and
+  category;
+- current Jackett magnet mode and independent Kinozal clients still resolve the
+  exact info-hash through
+  `get_srv_details.php?id=<id>&action=2`; that response also exposes the
+  concrete file list.
+
+Architecture:
+- macOS Kinozal follows the proven Stage 33 RuTracker design: one persistent
+  WKWebsiteDataStore owns Cloudflare clearance, login, search, concrete detail
+  pages and server-details identity requests;
+- mirror order is `.me` first, `.guru` fallback; `.tv` is deliberately
+  excluded;
+- no Kinozal username/password is stored by Rats Search on macOS;
+- non-macOS builds keep Kinozal disabled for now rather than pretending a
+  fragile HTTP login works.
+
+Commit:
+- this Stage 36 commit atomically adds the parser, WebKit transport, async search
+  client, Application/UI wiring, tests and this handoff.
+
+Exact-source flow:
+1. browser search `browse.php?s=<query>...`;
+2. preserve the complete listing anchor text verbatim as the displayed release
+   title;
+3. open that row's exact `details.php?id=<id>` in the same browser session;
+4. capture release-specific page text and technical fields without shortening
+   the listing title;
+5. open exact `get_srv_details.php?id=<same id>&action=2`;
+6. require a valid 40-hex info-hash; import the endpoint's concrete file list;
+7. only then set `sourceVerified=true` and allow the row into Search Results.
+
+Implemented:
+- new `KinozalSource` parser:
+  - current mirror URL/search builder with Windows-1251 query encoding;
+  - full-title listing parser;
+  - size/S/L/date/category parsing;
+  - exact `details.php?id` validation;
+  - detailed exact-page metadata capture;
+  - exact info-hash and file-list parsing from `get_srv_details.php`;
+- new persistent macOS `KinozalBrowser`:
+  - hidden search/detail/server-detail navigation;
+  - interactive Cloudflare/login recovery in the same WKWebView;
+  - explicit session clearing that removes Kinozal records only;
+- new `KinozalSearchClient`:
+  - `.me -> .guru` search mirror failover;
+  - sequential candidate verification because one WebView owns one navigation;
+  - typed-search prioritization only; exact admission remains source-proven;
+  - explicit provider errors instead of silent zero on browser failures;
+- Application owns/cancels/exposes Kinozal;
+- Search Results includes Kinozal as an exact source on macOS;
+- new `KZ` source badge and Kinozal tooltip/display name;
+- details panel validates exact Kinozal IDs and automatically renders
+  `Open exact Kinozal release` for verified rows;
+- Settings > Indexer gains a separate
+  `Kinozal browser session -> Authorize / Re-login` block.
+
+Title/data guarantees:
+- the displayed title is the full listing anchor text; no media-manager title
+  normalization is applied;
+- the detail page never replaces a complete listing title with a shorter
+  nested-markup fragment;
+- every emitted Kinozal result has one exact details URL and an info-hash
+  resolved for that same numeric Kinozal ID;
+- detailed description comes from that concrete release page, never from a
+  generic movie lookup.
+
+Regression coverage:
+- current mirror search URL and Windows-1251 path;
+- full long/nested Kinozal listing title remains complete;
+- size, S/L, date, category and exact ID parsing;
+- detail-page enrichment preserves the full title;
+- server-details response resolves hash + file list + piece size;
+- exact URL validation accepts only current `.me/.guru` and matching IDs,
+  explicitly rejecting legacy `.tv` and unrelated hosts.
+
+Handoff:
+- branch: `stage36-kinozal-browser-source`;
+- parent: Stage 35 head
+  `1109f6aeee041ae5f64b9ed40fe83dc28509dee8`;
+- runtime acceptance on macOS Sequoia:
+  1. Settings > Indexer shows Kinozal browser session;
+  2. authorize once;
+  3. search a common movie;
+  4. expect `KZ` rows with full titles;
+  5. select a KZ row: rich exact-source description + file list + info hash;
+  6. `Open exact Kinozal release` opens that row's exact
+     `details.php?id=<sourceTopicId>`;
+  7. quit/relaunch and repeat without re-entering credentials.
+

@@ -7,6 +7,7 @@
 #include "common/logging.h"
 #include "rest/api_router.h"
 #include "net/rutracker_ru_search_client.h"
+#include "net/kinozal_search_client.h"
 #include <QApplication>
 
 #include <QApplication>
@@ -356,6 +357,48 @@ QWidget* SettingsDialog::createIndexerTab()
     }
 
     tabLayout->addWidget(ruTrackerGroup);
+
+    QGroupBox* kinozalGroup = new QGroupBox(tr("Kinozal browser session"));
+    QVBoxLayout* kinozalLayout = new QVBoxLayout(kinozalGroup);
+    kinozalLayout->setSpacing(10);
+
+    QLabel* kinozalHint = new QLabel(
+        tr("Kinozal uses one persistent embedded WebKit session for Cloudflare, "
+           "authorization, search and exact release pages. Current mirrors are "
+           "kinozal.me with kinozal.guru fallback; kinozal.tv is intentionally "
+           "not used."));
+    kinozalHint->setWordWrap(true);
+    kinozalHint->setObjectName("hintLabel");
+    kinozalLayout->addWidget(kinozalHint);
+
+    kinozalBrowserStatus_ = new QLabel(
+        tr("Session status is checked automatically on the next Kinozal search."));
+    kinozalBrowserStatus_->setWordWrap(true);
+    kinozalLayout->addWidget(kinozalBrowserStatus_);
+
+    kinozalAuthorizeButton_ = new QPushButton(tr("Authorize / Re-login"));
+    kinozalAuthorizeButton_->setToolTip(
+        tr("Clear only Kinozal website data and open a fresh browser login."));
+    kinozalLayout->addWidget(kinozalAuthorizeButton_, 0, Qt::AlignLeft);
+
+    if (auto* kinozal = app_ ? app_->kinozalSearch() : nullptr) {
+        connect(kinozalAuthorizeButton_, &QPushButton::clicked, this,
+            [this, kinozal]() {
+                kinozalAuthorizeButton_->setEnabled(false);
+                kinozalBrowserStatus_->setText(
+                    tr("Opening a fresh Kinozal browser session…"));
+                kinozal->reloginInBrowser();
+            });
+        connect(kinozal,
+            &rats::net::KinozalSearchClient::browserAuthorizationChanged,
+            this, [this](bool authorized, const QString& message) {
+                Q_UNUSED(authorized);
+                kinozalBrowserStatus_->setText(message);
+                kinozalAuthorizeButton_->setEnabled(true);
+            });
+    }
+
+    tabLayout->addWidget(kinozalGroup);
 #else
     QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker account"));
     QFormLayout* ruTrackerLayout = new QFormLayout(ruTrackerGroup);

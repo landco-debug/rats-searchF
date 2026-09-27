@@ -15,6 +15,7 @@
 #include "net/rutracker_ru_search_client.h"
 #include "net/megapeer_search_client.h"
 #include "net/nnmclub_search_client.h"
+#include "net/kinozal_search_client.h"
 #include "net/p2p_transport.h"
 #include "net/swarm_scraper.h"
 #include "net/torrent_engine.h"
@@ -67,6 +68,7 @@ struct Application::Private {
     std::unique_ptr<net::RuTrackerRuSearchClient> ruTrackerRuSearch;
     std::unique_ptr<net::MegaPeerSearchClient> megaPeerSearch;
     std::unique_ptr<net::NnmClubSearchClient> nnmClubSearch;
+    std::unique_ptr<net::KinozalSearchClient> kinozalSearch;
 
     // Services
     std::unique_ptr<service::FilterPolicy> filter;
@@ -146,6 +148,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
 #endif
     d_->megaPeerSearch = std::make_unique<net::MegaPeerSearchClient>();
     d_->nnmClubSearch = std::make_unique<net::NnmClubSearchClient>();
+    d_->kinozalSearch = std::make_unique<net::KinozalSearchClient>();
 
     // --- Services ---------------------------------------------------------
     d_->filter = std::make_unique<service::FilterPolicy>();
@@ -324,6 +327,7 @@ void Application::stop()
     d_->ruTrackerRuSearch->cancel();
     d_->megaPeerSearch->cancel();
     d_->nnmClubSearch->cancel();
+    d_->kinozalSearch->cancel();
     d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
@@ -385,6 +389,10 @@ net::MegaPeerSearchClient* Application::megaPeerSearch() const
 net::NnmClubSearchClient* Application::nnmClubSearch() const
 {
     return d_->nnmClubSearch.get();
+}
+net::KinozalSearchClient* Application::kinozalSearch() const
+{
+    return d_->kinozalSearch.get();
 }
 service::IndexingService* Application::indexing() const
 {

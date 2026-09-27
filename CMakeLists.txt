@@ -212,8 +212,13 @@ target_link_libraries(ratscore PUBLIC
 # file at the src/ root — is listed explicitly on the executable below.
 if(APPLE)
     enable_language(OBJCXX)
-    target_sources(ratscore PRIVATE src/net/rutracker_browser.mm)
-    set_source_files_properties(src/net/rutracker_browser.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_sources(ratscore PRIVATE
+        src/net/rutracker_browser.mm
+        src/net/kinozal_browser.mm)
+    set_source_files_properties(
+        src/net/rutracker_browser.mm
+        src/net/kinozal_browser.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(ratscore PUBLIC "-framework WebKit" "-framework AppKit")
 endif()
 

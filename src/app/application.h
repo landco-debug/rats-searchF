@@ -22,6 +22,7 @@ class RutorSearchClient;
 class RuTrackerRuSearchClient;
 class MegaPeerSearchClient;
 class NnmClubSearchClient;
+class KinozalSearchClient;
 } // namespace rats::net
 namespace rats::rest {
 class ApiRouter;
@@ -100,6 +101,7 @@ public:
     net::RuTrackerRuSearchClient* ruTrackerRuSearch() const;
     net::MegaPeerSearchClient* megaPeerSearch() const;
     net::NnmClubSearchClient* nnmClubSearch() const;
+    net::KinozalSearchClient* kinozalSearch() const;
     service::IndexingService* indexing() const;
     service::SearchService* search() const;
     service::DownloadService* downloads() const;

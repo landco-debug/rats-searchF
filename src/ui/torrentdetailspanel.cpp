@@ -8,6 +8,7 @@
 #include "domain/torrent_codec.h"
 #include "net/torrent_engine.h"
 #include "net/rutracker_ru_source.h"
+#include "net/kinozal_source.h"
 #include "peer/peer_api.h"
 #include "services/download_service.h"
 #include "services/tracker_service.h"
@@ -88,6 +89,14 @@ QUrl verifiedExactSourceUrl(const QJsonObject& info)
         return url;
     }
 
+    if (provider == QStringLiteral("kinozal")) {
+        const int expectedId
+            = info.value(QStringLiteral("sourceTopicId")).toInt();
+        if (!rats::net::KinozalSource::isExactDetailUrl(url, expectedId))
+            return {};
+        return url;
+    }
+
     return {};
 }
 
@@ -103,6 +112,8 @@ QString exactSourceDisplayName(const QJsonObject& info)
         return QStringLiteral("MegaPeer");
     if (provider == QStringLiteral("nnmclub"))
         return QStringLiteral("NNM-Club");
+    if (provider == QStringLiteral("kinozal"))
+        return QStringLiteral("Kinozal");
     return QString();
 }
 
