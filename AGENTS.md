@@ -255,3 +255,23 @@ Not wired into the GUI yet.
 
 Next stage:
 - add the asynchronous RuTracker.RU transport and Application ownership, then aggregate Rutor + RuTracker.RU without mixing old local/P2P/DHT-only search results.
+
+
+### Stage 11 — asynchronous RuTracker.RU transport and Application ownership
+
+Commit message: `feat: add strict RuTracker.RU search client`.
+
+Implemented:
+- new `src/net/rutracker_ru_search_client.{h,cpp}`;
+- asynchronous public RuTracker.RU search request;
+- bounded detail-page verification (4 concurrent requests);
+- every emitted result must pass Stage 10 exact-infohash verification and strict completeness;
+- generation/cancellation guards prevent stale query results;
+- `Application` owns one `RuTrackerRuSearchClient`, exposes it through `ruTrackerRuSearch()`, and cancels it during shutdown.
+
+Still intentionally unchanged:
+- Search Results continues to call only Rutor at this stage;
+- Torrent Details still recognizes only Rutor as a user-visible exact-source provider.
+
+Next stage:
+- aggregate both strict clients in Search Results, deduplicate by info-hash, keep source provenance, and generalize exact-source details rendering to Rutor + RuTracker.RU.

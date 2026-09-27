@@ -12,6 +12,7 @@
 #include "domain/torrent.h"
 #include "net/crawler.h"
 #include "net/rutor_search_client.h"
+#include "net/rutracker_ru_search_client.h"
 #include "net/p2p_transport.h"
 #include "net/swarm_scraper.h"
 #include "net/torrent_engine.h"
@@ -60,6 +61,7 @@ struct Application::Private {
     std::unique_ptr<net::SwarmScraper> swarmScraper;
     std::unique_ptr<net::TrackerSiteScraper> siteScraper;
     std::unique_ptr<net::RutorSearchClient> rutorSearch;
+    std::unique_ptr<net::RuTrackerRuSearchClient> ruTrackerRuSearch;
 
     // Services
     std::unique_ptr<service::FilterPolicy> filter;
@@ -125,6 +127,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->swarmScraper = std::make_unique<net::SwarmScraper>();
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
     d_->rutorSearch = std::make_unique<net::RutorSearchClient>();
+    d_->ruTrackerRuSearch = std::make_unique<net::RuTrackerRuSearchClient>();
 
     // --- Services ---------------------------------------------------------
     d_->filter = std::make_unique<service::FilterPolicy>();
@@ -300,6 +303,7 @@ void Application::stop()
     // announces / HTTP requests are drained rather than left blocking teardown.
     d_->crawler->stop();
     d_->rutorSearch->cancel();
+    d_->ruTrackerRuSearch->cancel();
     d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
@@ -349,6 +353,10 @@ net::Crawler* Application::crawler() const
 net::RutorSearchClient* Application::rutorSearch() const
 {
     return d_->rutorSearch.get();
+}
+net::RuTrackerRuSearchClient* Application::ruTrackerRuSearch() const
+{
+    return d_->ruTrackerRuSearch.get();
 }
 service::IndexingService* Application::indexing() const
 {
