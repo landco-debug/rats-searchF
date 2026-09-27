@@ -15,12 +15,18 @@ public:
         const QString& query,
         const QString& sortKey = QStringLiteral("seeders_desc"));
 
-    // Search rows bind one concrete /torrent/<id>/... page to one concrete
-    // /download/<id>/... .torrent URL. The info-hash is deliberately resolved
-    // from that .torrent before the candidate can be emitted.
+    // A search row must identify one concrete /torrent/<id> page. A paired
+    // direct .torrent URL is useful but no longer mandatory at this stage:
+    // current detail pages normally expose a magnet, and the exact detail page
+    // can also supply its own download link when a .torrent fallback is needed.
     static QVector<domain::Torrent> parseSearchPage(
         const QByteArray& rawData, const QUrl& pageUrl, int maxCandidates = 50);
 
+    // Parses and verifies one concrete detail page. Returns true when the page
+    // itself belongs to the expected topic and its exact release information was
+    // parsed. sourceVerified becomes true only after identity is established by
+    // the detail-page magnet or by a hash pre-filled from that page's paired
+    // .torrent fallback.
     static bool applyDetailPage(
         domain::Torrent& torrent, const QByteArray& rawData, const QUrl& finalUrl);
 
