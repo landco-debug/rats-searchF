@@ -53,23 +53,36 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
             result.torrent = existing;
         }
 
-        // A peer may know richer tracker/site metadata than our local copy.
-        // Backfill only missing keys so remote/stale data never clobbers a value
-        // already obtained locally.
-        QJsonObject infoBackfill;
-        for (auto it = torrent.info.constBegin(); it != torrent.info.constEnd(); ++it) {
-            const QJsonValue current = existing.info.value(it.key());
-            const bool missing = current.isUndefined() || current.isNull()
-                || (current.isString() && current.toString().isEmpty())
-                || (current.isArray() && current.toArray().isEmpty())
-                || (current.isObject() && current.toObject().isEmpty());
-            if (missing)
-                infoBackfill.insert(it.key(), it.value());
-        }
-        if (!infoBackfill.isEmpty() && repository_->mergeInfo(existing.hash, infoBackfill)) {
-            for (auto it = infoBackfill.constBegin(); it != infoBackfill.constEnd(); ++it)
-                existing.info.insert(it.key(), it.value());
-            result.torrent = existing;
+        // Exact source provenance is qualitatively stronger than post-hoc
+        // enrichment. If an adapter proved a concrete source page against this
+        // exact info-hash, replace the old info object wholesale so stale
+        // generic descriptions/links cannot survive next to the verified one.
+        const bool authoritativeSource
+            = torrent.info.value(QStringLiteral("sourceVerified")).toBool(false)
+            && !torrent.info.value(QStringLiteral("sourceUrl")).toString().isEmpty();
+
+        if (authoritativeSource) {
+            existing.info = torrent.info;
+            if (repository_->update(existing))
+                result.torrent = existing;
+        } else {
+            // Ordinary peer/import metadata remains conservative: backfill only
+            // missing keys so stale remote data never clobbers local values.
+            QJsonObject infoBackfill;
+            for (auto it = torrent.info.constBegin(); it != torrent.info.constEnd(); ++it) {
+                const QJsonValue current = existing.info.value(it.key());
+                const bool missing = current.isUndefined() || current.isNull()
+                    || (current.isString() && current.toString().isEmpty())
+                    || (current.isArray() && current.toArray().isEmpty())
+                    || (current.isObject() && current.toObject().isEmpty());
+                if (missing)
+                    infoBackfill.insert(it.key(), it.value());
+            }
+            if (!infoBackfill.isEmpty() && repository_->mergeInfo(existing.hash, infoBackfill)) {
+                for (auto it = infoBackfill.constBegin(); it != infoBackfill.constEnd(); ++it)
+                    existing.info.insert(it.key(), it.value());
+                result.torrent = existing;
+            }
         }
 
         if (torrent.good > existing.good || torrent.bad > existing.bad) {

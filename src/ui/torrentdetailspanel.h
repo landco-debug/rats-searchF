@@ -119,10 +119,10 @@ private:
     QPushButton* copyHashButton_;
     QPushButton* closeButton_;
 
-    // Multi-source torrent information resolver. Tracker websites are tried
-    // first, then connected Rats Search peers, an exact public info-hash index,
-    // and finally raw BitTorrent DHT/BEP 9 metadata. Every path terminates with
-    // either data or a visible error.
+    // Rich information resolver. Verified source-first rows (Rutor/RuTracker.RU)
+    // are terminal: their stored exact release snapshot is rendered directly and no post-hoc
+    // lookup runs. Legacy/non-verified rows retain the old tracker/peer/public-
+    // index/DHT fallback chain.
     void requestTrackerRefresh();
     void requestPeerInfoFallback(const QString& hash);
     void requestPublicIndexFallback(const QString& hash);
@@ -135,8 +135,8 @@ private:
     // Tracker info UI elements
     QWidget* trackerInfoWidget_; // Container for all tracker info
     QLabel* trackerInfoLoadingLabel_; // Current resolution stage / terminal error
-    QLabel* trackerInfoSourceLabel_; // Which fallback source produced the data
-    QLabel* trackerUrlsLabel_; // Raw tracker URLs from fallback metadata
+    QLabel* trackerInfoSourceLabel_; // Exact source identity or legacy fallback source
+    QLabel* trackerUrlsLabel_; // Exact release facts/URL or legacy tracker URLs
     QPushButton* retryInfoButton_; // Retry all resolution paths after failure
     QLabel* posterLabel_; // Poster/cover image
     QLabel* descriptionLabel_; // Description text (expandable)

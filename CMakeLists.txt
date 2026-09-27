@@ -210,6 +210,13 @@ target_link_libraries(ratscore PUBLIC
 # Widgets presentation layer (src/ui). Globbed with CONFIGURE_DEPENDS just like
 # ratscore, so adding a file re-runs CMake automatically. main.cpp — the sole
 # file at the src/ root — is listed explicitly on the executable below.
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(ratscore PRIVATE src/net/rutracker_browser.mm)
+    set_source_files_properties(src/net/rutracker_browser.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(ratscore PUBLIC "-framework WebKit" "-framework AppKit")
+endif()
+
 file(GLOB_RECURSE RATS_GUI_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/bootstrap/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui/*.cpp
