@@ -1276,3 +1276,46 @@ Handoff:
   `911d5c985218ff04b963bf7beab5150051c12f2a`;
 - keep the PR draft until macOS runtime acceptance.
 
+### Stage 34 — preserve full RuTracker release titles with nested markup
+
+Runtime finding:
+- Stage 33 successfully restored visible RuTracker results on macOS after browser
+  authorization;
+- however RT rows showed truncated names such as `Багровый`, `В`,
+  `Полицейская`, etc. while the same releases should have full topic titles;
+- the search-row title was already parsed correctly; truncation happened later
+  in `applyDetailPage()`, which overwrote that title from `#topic-title`;
+- the old regular expression terminated on the first closing child tag
+  (`</[^>]+>`), so nested markup such as
+  `<b>Багровый</b> прилив / Crimson Tide ...` became only `Багровый`.
+
+Commits in this stage:
+- `37878df90d8daec54af88c8481d502be6ad8610b`
+  `fix: preserve full RuTracker titles with nested markup`
+- `ddaa0ae36e2a364dc09cd07af197d9f29af40277`
+  `test: reproduce truncated RuTracker nested topic titles`
+
+Implemented:
+- added a dedicated DOM-like `elementTextById()` extractor that finds the
+  opening tag carrying `id="topic-title"` and closes only on that same outer
+  tag type;
+- nested `<b>`, `<span>` and similar formatting inside the title are removed
+  only after the whole element body has been captured;
+- a detail-page title is no longer allowed to replace an already complete
+  search-row title with a suspiciously shorter value;
+- exact source URL, topic ID, magnet/info-hash verification and all metadata
+  enrichment remain unchanged.
+
+Regression coverage:
+- reproduces `<a id="topic-title"><b>Багровый</b> прилив / Crimson Tide ...`;
+- asserts that the final torrent name is the complete
+  `Багровый прилив / Crimson Tide (1995) BDRip 1080p`, never just
+  `Багровый`.
+
+Handoff:
+- branch: `stage34-rutracker-full-titles`;
+- parent: Stage 33 head
+  `d9967020c04c1eda57bbda40f9984780fa696804`;
+- runtime acceptance: RuTracker remains visible after browser auth and every RT
+  row shows the full release title instead of the first styled word.
+
