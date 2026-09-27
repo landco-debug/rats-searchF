@@ -18,9 +18,10 @@ namespace rats::net {
 // Authenticated asynchronous RuTracker exact-source client.
 //
 // RuTracker search and topic metadata are account-gated. The client logs in on
-// an official mirror, keeps that mirror's cookies in its QNetworkAccessManager,
-// then verifies every result on its concrete topic page before emitting it.
-// Official mirrors are tried automatically because reachability differs by ISP.
+// an official mirror, persists that mirror's cookie session between app
+// launches, and verifies every result on its concrete topic page before
+// emitting it. Official mirrors are tried automatically because reachability
+// differs by ISP.
 class RuTrackerRuSearchClient : public QObject {
     Q_OBJECT
 
@@ -48,7 +49,13 @@ private:
     };
 
     void authenticate(int generation);
-    void resetCookieJar();
+    void resetCookieJar(bool restorePersisted = true);
+    bool restorePersistedSession();
+    void persistActiveSession();
+    void clearPersistedSessionForActiveMirror();
+    void clearAllPersistedSessions();
+    QString sessionSettingsGroup(const QString& host) const;
+
     void resetMirrorCycle();
     bool tryNextMirror(int generation, const QString& reason);
     QUrl urlOnActiveMirror(const QString& path) const;
