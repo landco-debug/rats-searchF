@@ -15,6 +15,8 @@ class QNetworkReply;
 
 namespace rats::net {
 
+class CloudflareClearance;
+
 class MegaPeerSearchClient : public QObject {
     Q_OBJECT
 public:
@@ -48,12 +50,15 @@ private:
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
     void recordNetworkFailure(const QString& context, const QString& error);
+    void requestCloudflareClearance(const QUrl& url, int generation);
 
     QNetworkAccessManager* networkManager_ = nullptr;
+    CloudflareClearance* clearance_ = nullptr;
     QSet<QNetworkReply*> replies_;
     QQueue<Job> queue_;
 
     int generation_ = 0;
+    int clearanceGeneration_ = -1;
     int active_ = 0;
     int requestedLimit_ = 50;
     int accepted_ = 0;
@@ -61,15 +66,14 @@ private:
     int networkFailures_ = 0;
     bool searchResolved_ = false;
     bool finishedEmitted_ = true;
+    bool clearanceRetried_ = false;
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
     QString lastNetworkError_;
+    QString userAgent_;
 
     static constexpr int kTimeoutMs = 15000;
-    // Interactive search should not fan out four detail/.torrent requests per
-    // row against a public tracker. Two detail requests at a time are enough to
-    // keep results streaming without recreating crawler-like request pressure.
     static constexpr int kMaxConcurrent = 2;
 };
 
