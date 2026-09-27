@@ -6,6 +6,7 @@
 #include "autostartmanager.h"
 #include "common/logging.h"
 #include "rest/api_router.h"
+#include "net/rutracker_ru_search_client.h"
 #include <QApplication>
 
 #include <QApplication>
@@ -22,6 +23,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QStyle>
+#include <QTabBar>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(rats::app::Application* app, QWidget* parent)
@@ -50,6 +52,11 @@ void SettingsDialog::setupUi()
 
     // Tab widget
     tabWidget_ = new QTabWidget(this);
+    // Settings tabs use the same non-eliding policy as the main window: preserve
+    // the complete caption, fall back to native tab scrolling only when needed.
+    tabWidget_->tabBar()->setElideMode(Qt::ElideNone);
+    tabWidget_->tabBar()->setUsesScrollButtons(true);
+    tabWidget_->tabBar()->setExpanding(false);
     tabWidget_->addTab(createGeneralTab(), tr("⚙️ General"));
     tabWidget_->addTab(createNetworkTab(), tr("🌐 Network"));
     tabWidget_->addTab(createIndexerTab(), tr("🕷️ Indexer"));
@@ -205,15 +212,6 @@ QWidget* SettingsDialog::createGeneralTab()
 
     tabLayout->addWidget(searchGroup);
 
-    // --- Updates ---
-    QGroupBox* updatesGroup = new QGroupBox(tr("Updates"));
-    QFormLayout* updatesLayout = new QFormLayout(updatesGroup);
-
-    checkUpdatesCheck_ = new QCheckBox(tr("Check for updates on startup"));
-    updatesLayout->addRow(checkUpdatesCheck_);
-
-    tabLayout->addWidget(updatesGroup);
-
     tabLayout->addStretch();
     return wrapInScrollArea(tab);
 }
@@ -315,6 +313,30 @@ QWidget* SettingsDialog::createIndexerTab()
     indexerLayout->addRow(trackersCheck_);
 
     tabLayout->addWidget(indexerGroup);
+
+    // --- Authenticated tracker account ---
+    QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker account"));
+    QFormLayout* ruTrackerLayout = new QFormLayout(ruTrackerGroup);
+    ruTrackerLayout->setSpacing(10);
+
+    ruTrackerUsernameEdit_ = new QLineEdit();
+    ruTrackerUsernameEdit_->setPlaceholderText(tr("RuTracker username"));
+    ruTrackerLayout->addRow(tr("Username:"), ruTrackerUsernameEdit_);
+
+    ruTrackerPasswordEdit_ = new QLineEdit();
+    ruTrackerPasswordEdit_->setEchoMode(QLineEdit::Password);
+    ruTrackerPasswordEdit_->setPlaceholderText(tr("RuTracker password"));
+    ruTrackerLayout->addRow(tr("Password:"), ruTrackerPasswordEdit_);
+
+    QLabel* ruTrackerHint = new QLabel(
+        tr("RuTracker search is enabled only when both fields are set. "
+           "The password is stored in this app's local macOS preferences and "
+           "is not written to rats.json or exposed through the REST API."));
+    ruTrackerHint->setWordWrap(true);
+    ruTrackerHint->setObjectName("hintLabel");
+    ruTrackerLayout->addRow(ruTrackerHint);
+
+    tabLayout->addWidget(ruTrackerGroup);
 
     // --- Spider Performance ---
     QGroupBox* perfGroup = new QGroupBox(tr("Spider Performance"));
@@ -623,7 +645,6 @@ void SettingsDialog::loadSettings()
     startMinimizedCheck_->setChecked(config_->startMinimized());
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
-    checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
     searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
     updateSearchHistoryButton();
 
@@ -641,6 +662,12 @@ void SettingsDialog::loadSettings()
     indexerCheck_->setChecked(config_->indexerEnabled());
     trackersCheck_->setChecked(config_->trackersEnabled());
     walkIntervalSpin_->setValue(config_->spiderWalkInterval());
+
+    QSettings trackerSettings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+    ruTrackerUsernameEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/username")).toString());
+    ruTrackerPasswordEdit_->setText(
+        trackerSettings.value(QStringLiteral("rutracker/password")).toString());
 
     // Filters
     maxFilesSpin_->setValue(config_->filtersMaxFiles());
@@ -700,7 +727,6 @@ void SettingsDialog::saveSettings()
     config_->setStartMinimized(startMinimizedCheck_->isChecked());
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
-    config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
     config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 
     // Autostart lives in the OS (registry / .desktop / launch agent), which is its
@@ -727,6 +753,13 @@ void SettingsDialog::saveSettings()
     config_->setTrackersEnabled(trackersCheck_->isChecked());
     config_->setSpiderWalkInterval(walkIntervalSpin_->value());
 
+    const QString ruTrackerUsername = ruTrackerUsernameEdit_->text().trimmed();
+    const QString ruTrackerPassword = ruTrackerPasswordEdit_->text();
+    settings.setValue(QStringLiteral("rutracker/username"), ruTrackerUsername);
+    settings.setValue(QStringLiteral("rutracker/password"), ruTrackerPassword);
+    if (auto* ruTracker = app_->ruTrackerRuSearch())
+        ruTracker->setCredentials(ruTrackerUsername, ruTrackerPassword);
+
     // Save Filters
     config_->setFiltersMaxFiles(maxFilesSpin_->value());
     config_->setFiltersNamingRegExp(regexEdit_->text());
@@ -750,6 +783,7 @@ void SettingsDialog::saveSettings()
     if (!newDataDir.isEmpty()) {
         settings.setValue("dataDirectory", newDataDir);
     }
+    settings.sync();
 
     // Check if restart needed (only for settings that can't be applied at
     // runtime)

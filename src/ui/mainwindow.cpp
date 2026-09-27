@@ -30,6 +30,11 @@
 #include "format.h"
 #include "net/crawler.h"
 #include "net/p2p_transport.h"
+#include "net/rutor_search_client.h"
+#include "net/megapeer_search_client.h"
+#include "net/nnmclub_search_client.h"
+#include "net/rutracker_ru_search_client.h"
+#include "net/torrent_engine.h"
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
 #include "services/database_sync_service.h"
@@ -74,6 +79,12 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMetaObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QPointer>
+#include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -88,7 +99,9 @@
 #include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableView>
+#include <QTemporaryFile>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -103,6 +116,35 @@ using rats::domain::Torrent;
 using rats::service::SearchService;
 using rats::service::UpdateService;
 namespace codec = rats::domain::codec;
+
+namespace {
+class SearchHeaderView final : public QHeaderView {
+public:
+    explicit SearchHeaderView(QWidget* parent) : QHeaderView(Qt::Horizontal, parent) {}
+protected:
+    void paintSection(QPainter* painter, const QRect& rect, int logicalIndex) const override
+    {
+        QHeaderView::paintSection(painter, rect, logicalIndex);
+        if (logicalIndex != SearchResultModel::SeedersColumn
+            && logicalIndex != SearchResultModel::LeechersColumn)
+            return;
+        const bool seeders = logicalIndex == SearchResultModel::SeedersColumn;
+        const QColor color = rats::ui::Theme::instance().color(
+            seeders ? QLatin1String("success") : QLatin1String("danger"));
+        QRect textRect = rect.adjusted(3, 0, -3, 0);
+        if (sortIndicatorSection() == logicalIndex)
+            textRect.adjust(0, 0, -12, 0);
+        painter->save();
+        painter->setPen(color);
+        QFont font = painter->font();
+        font.setBold(true);
+        painter->setFont(font);
+        painter->drawText(textRect, Qt::AlignCenter,
+            seeders ? QStringLiteral("S") : QStringLiteral("L"));
+        painter->restore();
+    }
+};
+} // namespace
 
 MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     : QMainWindow(parent), app_(app), trayIcon(nullptr), trayMenu(nullptr)
@@ -131,6 +173,16 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     setupMenuBar();
     setupStatusBar();
     setupSystemTray();
+    fileMetadataNetwork_ = new QNetworkAccessManager(this);
+
+    // On macOS, clicking the Dock icon activates the application but does not
+    // necessarily route through QSystemTrayIcon. If this window was hidden by
+    // our minimize/close-to-tray path, restore it explicitly on app activation.
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+        [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive && hiddenToTray_)
+                QTimer::singleShot(0, this, &MainWindow::bringToFront);
+        });
 
     // Restore UI state only after every referenced widget/header/splitter exists.
     // The old code restored before setupUi() and then immediately called
@@ -158,10 +210,6 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     refreshP2PStatus();
     updateNetworkStatus();
 
-    // Kick off a startup update check if enabled.
-    if (config && config->checkUpdatesOnStartup() && app_->updates()) {
-        QTimer::singleShot(5000, this, [this]() { app_->updates()->checkForUpdates(); });
-    }
 }
 
 MainWindow::~MainWindow()
@@ -269,6 +317,12 @@ void MainWindow::setupUi()
 
     tabWidget = new QTabWidget(this);
     tabWidget->setDocumentMode(false);
+    // Never turn useful tab names into "Search Res..." / "Downlo...".
+    // Let every tab use its natural text width; if the details panel leaves too
+    // little room, Qt's native scroll buttons are preferable to ambiguous labels.
+    tabWidget->tabBar()->setElideMode(Qt::ElideNone);
+    tabWidget->tabBar()->setUsesScrollButtons(true);
+    tabWidget->tabBar()->setExpanding(false);
 
     // Search results tab
     QWidget* searchTab = new QWidget();
@@ -281,11 +335,21 @@ void MainWindow::setupUi()
 
     resultsTableView->setModel(searchResultModel);
     resultsTableView->setItemDelegate(torrentDelegate);
+    resultsTableView->setHorizontalHeader(new SearchHeaderView(resultsTableView));
     resultsTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     resultsTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     resultsTableView->setAlternatingRowColors(true);
+
+    // A freshly constructed QHeaderView is not clickable by default. The
+    // custom SearchHeaderView replaced QTableView's stock header, so visual
+    // sort indicators were restored but mouse clicks never changed them.
+    // Explicitly enable clickable sections before enabling table sorting.
+    QHeaderView* searchHeader = resultsTableView->horizontalHeader();
+    searchHeader->setSectionsClickable(true);
+    searchHeader->setSortIndicatorShown(true);
+    searchHeader->setSortIndicatorClearable(false);
     resultsTableView->setSortingEnabled(true);
-    resultsTableView->horizontalHeader()->setStretchLastSection(true);
+    searchHeader->setStretchLastSection(false);
     resultsTableView->verticalHeader()->setVisible(false);
     resultsTableView->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     resultsTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -293,11 +357,22 @@ void MainWindow::setupUi()
     resultsTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     resultsTableView->setMouseTracking(true);
 
-    resultsTableView->setColumnWidth(0, 550); // Name
-    resultsTableView->setColumnWidth(1, 100); // Size
-    resultsTableView->setColumnWidth(2, 80); // Seeders
-    resultsTableView->setColumnWidth(3, 80); // Leechers
-    resultsTableView->setColumnWidth(4, 120); // Date
+    // Keep the release name wide. S/L are compact Latin torrent shorthand,
+    // drawn in conventional green/red; Date contains no time component.
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::NameColumn, QHeaderView::Stretch);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::SizeColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::SeedersColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::LeechersColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::DateColumn, QHeaderView::Fixed);
+    resultsTableView->setColumnWidth(SearchResultModel::SizeColumn, 92);
+    resultsTableView->setColumnWidth(SearchResultModel::SeedersColumn, 42);
+    resultsTableView->setColumnWidth(SearchResultModel::LeechersColumn, 42);
+    resultsTableView->setColumnWidth(SearchResultModel::DateColumn, 96);
 
     searchTabLayout->addWidget(resultsTableView);
     tabWidget->addTab(searchTab, tr("Search Results"));
@@ -376,12 +451,12 @@ void MainWindow::setupMenuBar()
 
     QAction* quitAction = fileMenu->addAction(tr("&Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
-    connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
+    connect(quitAction, &QAction::triggered, this, [this]() {
+        forceQuit_ = true;
+        close();
+    });
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
-
-    QAction* checkUpdateAction = helpMenu->addAction(tr("Check for &Updates..."));
-    connect(checkUpdateAction, &QAction::triggered, this, &MainWindow::checkForUpdates);
 
     QAction* changelogAction = helpMenu->addAction(tr("📋 &Changelog"));
     connect(changelogAction, &QAction::triggered, this, &MainWindow::showChangelog);
@@ -533,6 +608,10 @@ void MainWindow::connectSearchSignals()
 
     // Changing a filter re-runs the current query so results update in place.
     connect(typeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+        settings.setValue(QStringLiteral("search/contentType"),
+            typeComboBox->currentData().toString());
+        settings.sync();
         if (!currentSearchQuery_.isEmpty())
             performSearch(currentSearchQuery_);
     });
@@ -550,6 +629,17 @@ void MainWindow::connectSearchSignals()
             app_->config()->setSafeSearch(checked);
         if (!currentSearchQuery_.isEmpty())
             performSearch(currentSearchQuery_);
+    });
+
+    connect(sourceBadgeCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        if (torrentDelegate)
+            torrentDelegate->setShowSourceBadges(checked);
+        if (resultsTableView)
+            resultsTableView->viewport()->update();
+
+        QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+        settings.setValue(QStringLiteral("search/showSourceMarks"), checked);
+        settings.sync();
     });
 
     connect(resultsTableView->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
@@ -790,46 +880,71 @@ void MainWindow::connectServiceSignals()
 
 void MainWindow::connectPeerSignals()
 {
+    // Source-first discovery only. Both clients emit a Torrent only after their
+    // concrete tracker page has re-proved the exact info-hash and passed the
+    // strict rich-release completeness rule.
+    if (auto* source = app_->rutorSearch()) {
+        connect(source, &rats::net::RutorSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::RutorSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("Rutor"), rejected, error);
+            });
+    }
+
+    if (auto* source = app_->ruTrackerRuSearch()) {
+        connect(source, &rats::net::RuTrackerRuSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::RuTrackerRuSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("RuTracker.RU"), rejected, error);
+            });
+    }
+
+    if (auto* source = app_->megaPeerSearch()) {
+        connect(source, &rats::net::MegaPeerSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::MegaPeerSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("MegaPeer"), rejected, error);
+            });
+    }
+
+    if (auto* source = app_->nnmClubSearch()) {
+        connect(source, &rats::net::NnmClubSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::NnmClubSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("NNM-Club"), rejected, error);
+            });
+    }
+
+    // Peer single-torrent replies are still useful for an already selected
+    // verified result (for example to obtain its file list). Peer SEARCH replies
+    // are intentionally not connected to the Search Results model anymore.
     if (!app_->peerApi())
         return;
     auto* peerApi = app_->peerApi();
 
-    // Remote torrent search hits stream into the search-results model.
-    connect(peerApi, &rats::peer::PeerApi::remoteSearchResults, this,
-        [this](const QString& /*query*/, const QJsonArray& torrents) {
-            if (currentSearchQuery_.isEmpty())
-                return;
-            for (const QJsonValue& val : torrents) {
-                SearchHit hit = codec::searchHitFromJson(val.toObject());
-                if (hit.torrent.isValid())
-                    searchResultModel->addResult(hit);
-            }
-        });
-
-    // Remote file-search hits.
-    connect(peerApi, &rats::peer::PeerApi::remoteFileSearchResults, this,
-        [this](const QString& /*query*/, const QJsonArray& torrents) {
-            if (currentSearchQuery_.isEmpty())
-                return;
-            for (const QJsonValue& val : torrents) {
-                SearchHit hit = codec::searchHitFromJson(val.toObject());
-                hit.fromFileMatch = true;
-                if (hit.torrent.isValid())
-                    searchResultModel->addFileResult(hit);
-            }
-        });
-
-    // A single-torrent reply from a peer: populate the bottom files panel if it
-    // matches the torrent currently on screen.
     connect(peerApi, &rats::peer::PeerApi::remoteTorrentReceived, this,
         [this](const QString& hash, const QJsonObject& data) {
             if (!filesWidget || hash.isEmpty())
                 return;
             if (detailsPanel && detailsPanel->currentHash() != hash)
                 return;
-            // Parse through the shared codec so the file list is read from the
-            // canonical "files_list" key (with legacy "filesList" fallback), not
-            // the "files" count.
+
             const rats::domain::Torrent t = codec::torrentFromJson(data);
             if (!t.fileList.isEmpty()) {
                 filesWidget->setFiles(hash, t.name, t.fileList);
@@ -837,6 +952,128 @@ void MainWindow::connectPeerSignals()
                 verticalSplitter->setSizes({ 600, 200 });
             }
         });
+}
+
+void MainWindow::addVerifiedSourceResult(
+    const QString& query, const Torrent& incoming)
+{
+    if (query != currentSearchQuery_)
+        return;
+
+    const QJsonObject& info = incoming.info;
+    if (!info.value(QStringLiteral("sourceVerified")).toBool(false)
+        || !info.value(QStringLiteral("strictComplete")).toBool(false)
+        || info.value(QStringLiteral("sourceUrl")).toString().isEmpty()) {
+        return;
+    }
+
+    // The same BitTorrent payload may be published on both Rutor and
+    // RuTracker.RU. The info-hash is the identity, so show/index it once per
+    // search rather than presenting duplicate rows with different source URLs.
+    if (strictSearchHashes_.contains(incoming.hash))
+        return;
+
+    Torrent normalized = incoming;
+
+    // A source-first result has not been in the local index yet, so there is no
+    // local "added" timestamp on its very first appearance. Assign it before the
+    // initial insert/display; otherwise Date is blank until the same hash is
+    // searched a second time and read back from the database.
+    if (!normalized.added.isValid())
+        normalized.added = QDateTime::currentDateTimeUtc();
+
+    Torrent torrent = normalized;
+    if (app_->indexing()) {
+        const auto inserted = app_->indexing()->insert(normalized);
+        if (!inserted.success)
+            return;
+        torrent = inserted.torrent;
+
+        // Heal older exact-source rows that were stored before this first-pass
+        // classification fix.
+        if (torrent.contentType == rats::domain::ContentType::Unknown
+            && normalized.contentType != rats::domain::ContentType::Unknown) {
+            torrent.contentType = normalized.contentType;
+            if (app_->torrents()) {
+                app_->torrents()->updateClassification(
+                    torrent.hash, torrent.contentType, torrent.contentCategory);
+            }
+        }
+
+        if (!torrent.added.isValid())
+            torrent.added = normalized.added;
+    }
+
+    const SearchFilters filters = currentSearchFilters();
+    if ((filters.sizeMin > 0 || filters.sizeMax > 0) && torrent.size <= 0)
+        return;
+    if (filters.sizeMin > 0 && torrent.size < filters.sizeMin)
+        return;
+    if (filters.sizeMax > 0 && torrent.size > filters.sizeMax)
+        return;
+
+    if ((filters.filesMin > 0 || filters.filesMax > 0) && torrent.files <= 0)
+        return;
+    if (filters.filesMin > 0 && torrent.files < filters.filesMin)
+        return;
+    if (filters.filesMax > 0 && torrent.files > filters.filesMax)
+        return;
+
+    const QString wantedType = typeComboBox->currentData().toString();
+    if (!wantedType.isEmpty()
+        && rats::domain::toString(torrent.contentType).compare(
+               wantedType, Qt::CaseInsensitive)
+            != 0) {
+        return;
+    }
+    if (safeSearchCheckBox->isChecked()
+        && torrent.contentCategory == rats::domain::ContentCategory::XXX) {
+        return;
+    }
+
+    strictSearchHashes_.insert(incoming.hash);
+
+    SearchHit hit;
+    hit.torrent = torrent;
+    searchResultModel->addResult(hit);
+    showStatusMessage(
+        tr("✅ Verified releases: %1").arg(searchResultModel->resultCount()),
+        1500);
+}
+
+void MainWindow::finishStrictSource(
+    const QString& query, const QString& provider, int rejected,
+    const QString& error)
+{
+    if (query != currentSearchQuery_)
+        return;
+
+    strictSourcesRejected_ += qMax(0, rejected);
+    if (!error.isEmpty())
+        strictSourceErrors_ << provider + QStringLiteral(": ") + error;
+
+    if (strictSourcesPending_ > 0)
+        --strictSourcesPending_;
+    if (strictSourcesPending_ > 0)
+        return;
+
+    const int visible = searchResultModel->resultCount();
+    if (visible == 0 && !strictSourceErrors_.isEmpty()) {
+        showStatusMessage(
+            tr("⚠️ Source search failed: %1")
+                .arg(strictSourceErrors_.join(QStringLiteral(" · "))),
+            7000);
+        return;
+    }
+
+    QString message = tr("✅ Verified: %1 · hidden incomplete/unverified: %2")
+                          .arg(visible)
+                          .arg(strictSourcesRejected_);
+    if (!strictSourceErrors_.isEmpty()) {
+        message += tr(" · unavailable: %1")
+                       .arg(strictSourceErrors_.join(QStringLiteral(" · ")));
+    }
+    showStatusMessage(message, 6000);
 }
 
 // --- Search filters (size / file-count ranges) ------------------------------
@@ -914,6 +1151,12 @@ void MainWindow::setupSearchFilters()
     };
     form->addRow(tr("Files from:"), makeCountSpin(filesMinSpin));
     form->addRow(tr("Files to:"), makeCountSpin(filesMaxSpin));
+
+    sourceBadgeCheckBox = new QCheckBox(tr("Show source marks"), panel);
+    sourceBadgeCheckBox->setChecked(true);
+    sourceBadgeCheckBox->setToolTip(
+        tr("Show which exact tracker supplied each search result"));
+    form->addRow(QString(), sourceBadgeCheckBox);
 
     QPushButton* resetButton = new QPushButton(tr("Reset filters"), panel);
     // Neutral: the popup has no accept button, so nothing here should read as
@@ -1002,114 +1245,81 @@ void MainWindow::resetSearchFilters()
 
 void MainWindow::performSearch(const QString& query)
 {
-    if (query.isEmpty())
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty())
         return;
 
-    currentSearchQuery_ = query;
-    // Remember what the user searched for (a no-op while history is disabled).
+    currentSearchQuery_ = trimmed;
     if (app_->searchHistory())
-        app_->searchHistory()->add(query);
-    qInfo() << "Search started:" << query.left(50) << (query.length() > 50 ? "..." : "");
-    showStatusMessage(tr("🔍 Searching..."), 2000);
+        app_->searchHistory()->add(trimmed);
 
-    tabWidget->setCurrentIndex(0); // switch to Search Results
-
-    // Map the sort combo selection onto the request.
-    const QString sortData = sortComboBox->currentData().toString();
-    QString sort = "seeders";
-    if (sortData.startsWith("seeders"))
-        sort = "seeders";
-    else if (sortData.startsWith("size"))
-        sort = "size";
-    else if (sortData.startsWith("added"))
-        sort = "added";
-    else if (sortData.startsWith("name"))
-        sort = "name";
-
-    SearchService::Request req;
-    req.query = query;
-    req.limit = 50;
-    req.sort = sort;
-    req.descending = sortData.endsWith("desc");
-    req.safeSearch = safeSearchCheckBox->isChecked();
-    req.contentType = typeComboBox->currentData().toString();
-
-    const SearchFilters filters = currentSearchFilters();
-    req.sizeMin = filters.sizeMin;
-    req.sizeMax = filters.sizeMax;
-    req.filesMin = filters.filesMin;
-    req.filesMax = filters.filesMax;
-
+    qInfo() << "Strict multi-source search started:" << trimmed.left(80);
+    tabWidget->setCurrentIndex(0);
     searchResultModel->clearResults();
 
-    // Local torrent search (synchronous).
-    QVector<SearchHit> hits;
-    if (app_->search())
-        hits = app_->search()->searchTorrents(req);
-    searchResultModel->setResults(hits);
-    showStatusMessage(tr("✅ Found %n torrent(s)", nullptr, static_cast<int>(hits.size())), 3000);
+    // A new query owns a new selection context. Do not leave the previous
+    // torrent's details/files visible while the new source results stream in.
+    ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_.clear();
+    resultsTableView->clearSelection();
+    detailsPanel->hide();
+    filesWidget->clear();
+    filesWidget->hide();
 
-    // Local file search — merged in as file-match results.
-    if (app_->search()) {
-        QVector<SearchHit> fileHits = app_->search()->searchFiles(req);
-        if (!fileHits.isEmpty()) {
-            searchResultModel->addFileResults(fileHits);
-            showStatusMessage(
-                tr("✅ Found %1 total results (incl. file matches)").arg(searchResultModel->resultCount()), 3000);
-        }
+    strictSearchHashes_.clear();
+    strictSourcesRejected_ = 0;
+    strictSourceErrors_.clear();
+    strictSourcesPending_ = 0;
+
+    auto* rutor = app_->rutorSearch();
+    auto* rutracker = app_->ruTrackerRuSearch();
+    auto* megapeer = app_->megaPeerSearch();
+    auto* nnmclub = app_->nnmClubSearch();
+    const bool ruTrackerConfigured = rutracker && rutracker->isConfigured();
+
+    QStringList activeProviders;
+    if (rutor) {
+        ++strictSourcesPending_;
+        activeProviders << QStringLiteral("Rutor");
+    }
+    if (ruTrackerConfigured) {
+        ++strictSourcesPending_;
+        activeProviders << QStringLiteral("RuTracker");
+    }
+    if (megapeer) {
+        ++strictSourcesPending_;
+        activeProviders << QStringLiteral("MegaPeer");
+    }
+    if (nnmclub) {
+        ++strictSourcesPending_;
+        activeProviders << QStringLiteral("NNM-Club");
     }
 
-    // Ask connected peers as well; their answers stream back via peerApi signals.
-    if (app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
-        QJsonObject msg;
-        msg["query"] = query;
-        msg["text"] = query;
-        msg["limit"] = 50;
-        msg["orderBy"] = sort;
-        msg["orderDesc"] = req.descending;
-        msg["safeSearch"] = req.safeSearch;
-        if (!req.contentType.isEmpty())
-            msg["type"] = req.contentType;
-        // Ranges travel in the same {min,max} shape the REST router takes. An
-        // unset bound is left out entirely rather than sent as 0, so a peer that
-        // does read them cannot mistake "any" for "at least nothing".
-        if (filters.sizeMin > 0 || filters.sizeMax > 0) {
-            QJsonObject size;
-            if (filters.sizeMin > 0)
-                size["min"] = filters.sizeMin;
-            if (filters.sizeMax > 0)
-                size["max"] = filters.sizeMax;
-            msg["size"] = size;
-        }
-        if (filters.filesMin > 0 || filters.filesMax > 0) {
-            QJsonObject files;
-            if (filters.filesMin > 0)
-                files["min"] = filters.filesMin;
-            if (filters.filesMax > 0)
-                files["max"] = filters.filesMax;
-            msg["files"] = files;
-        }
-        app_->transport()->broadcastMessage("searchTorrent", msg);
-        app_->transport()->broadcastMessage("searchFiles", msg);
+    if (strictSourcesPending_ == 0) {
+        showStatusMessage(
+            tr("⚠️ Exact-source search is unavailable in this build."), 5000);
+        return;
     }
 
-    // DHT fallback: an info-hash query (bare hash OR a magnet link) that isn't
-    // indexed locally — pull the metadata from the DHT and add it as a result.
-    const QString dhtHash = SearchService::extractInfoHash(query);
-    if (hits.isEmpty() && !dhtHash.isEmpty() && app_->api()) {
-        app_->api()->call(
-            "torrent.get", QJsonObject { { "hash", dhtHash }, { "files", true } }, [this, query](const Result& result) {
-                if (!result.ok() || currentSearchQuery_ != query)
-                    return;
-                Torrent t = codec::torrentFromJson(result.data().toObject());
-                if (t.isValid()) {
-                    SearchHit hit;
-                    hit.torrent = t;
-                    searchResultModel->addResult(hit);
-                    showStatusMessage(tr("✅ Found torrent via DHT"), 3000);
-                }
-            });
-    }
+    QString searchStatus = tr("🔍 Searching verified releases on %1…")
+                               .arg(activeProviders.join(QStringLiteral(" + ")));
+    if (rutracker && !ruTrackerConfigured)
+        searchStatus += tr(" · RuTracker account not configured");
+    showStatusMessage(searchStatus, 0);
+
+    // These are deliberately the ONLY discovery sources for Search Results.
+    // Local index, P2P search and DHT-only hits cannot enter this table because
+    // they do not prove a concrete release page.
+    const QString sortKey = sortComboBox->currentData().toString();
+    const QString contentType = typeComboBox->currentData().toString();
+    if (rutor)
+        rutor->search(trimmed, 50, sortKey, contentType);
+    if (ruTrackerConfigured)
+        rutracker->search(trimmed, 50, sortKey, contentType);
+    if (megapeer)
+        megapeer->search(trimmed, 50, sortKey, contentType);
+    if (nnmclub)
+        nnmclub->search(trimmed, 50, sortKey, contentType);
 }
 
 void MainWindow::updateStatusBar()
@@ -1125,10 +1335,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
 {
     rats::app::ConfigStore* config = app_ ? app_->config() : nullptr;
 
-    // An update install is deliberately shutting the app down. Never intercept
-    // it with the tray or a confirmation prompt — the external updater is
-    // blocked waiting for this process to exit.
-    if (updateInstalling_) {
+    // Explicit Quit and update installation are deliberate shutdowns. Never
+    // intercept them with close-to-tray, and never rewrite tray preferences to
+    // force the close.
+    if (updateInstalling_ || forceQuit_) {
         saveSettings();
         event->accept();
         QApplication::quit();
@@ -1138,6 +1348,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     // Hide to tray instead of closing if enabled.
     bool closeToTray = config ? config->trayOnClose() : false;
     if (closeToTray && trayIcon && trayIcon->isVisible()) {
+        hiddenToTray_ = true;
         hide();
         if (!trayNotificationShown_) {
             trayIcon->showMessage(tr("Rats Search"), tr("Application is still running in the system tray."),
@@ -1358,7 +1569,10 @@ void MainWindow::onTabChanged(int index)
         if (idx.isValid())
             selectedTorrent = searchResultModel->getTorrent(idx.row());
     } else if (currentWidget == downloadsWidget) {
-        // Downloads tab has no torrent selection — hide the detail panels.
+        // Downloads tab has no torrent selection — hide the detail panels and
+        // invalidate any metadata callback belonging to the previous selection.
+        ++fileMetadataRequestSerial_;
+        fileMetadataLoadingHash_.clear();
         detailsPanel->hide();
         filesWidget->clear();
         filesWidget->hide();
@@ -1372,6 +1586,8 @@ void MainWindow::onTabChanged(int index)
     if (selectedTorrent.isValid()) {
         showTorrentDetails(selectedTorrent);
     } else {
+        ++fileMetadataRequestSerial_;
+        fileMetadataLoadingHash_.clear();
         detailsPanel->hide();
         filesWidget->clear();
         filesWidget->hide();
@@ -1380,10 +1596,253 @@ void MainWindow::onTabChanged(int index)
 
 void MainWindow::onDetailsPanelCloseRequested()
 {
+    ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_.clear();
     detailsPanel->hide();
     filesWidget->clear();
     filesWidget->hide();
     resultsTableView->clearSelection();
+}
+
+namespace {
+
+QVector<rats::domain::File> domainFilesFromMetadata(
+    const rats::net::TorrentMetadata& metadata)
+{
+    QVector<rats::domain::File> files;
+    files.reserve(metadata.files.size());
+    for (const rats::net::EngineFile& source : metadata.files) {
+        if (source.path.isEmpty() || source.size < 0)
+            continue;
+        rats::domain::File file;
+        file.path = source.path;
+        file.size = source.size;
+        files.append(std::move(file));
+    }
+    return files;
+}
+
+QNetworkRequest sourceTorrentRequest(const QUrl& url)
+{
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+        QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 RatsSearch/2"));
+    request.setRawHeader("Accept",
+        "application/x-bittorrent,application/octet-stream,*/*;q=0.5");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+        QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(10000);
+    return request;
+}
+
+} // namespace
+
+void MainWindow::acceptResolvedTorrentFiles(
+    const Torrent& torrent,
+    const rats::net::TorrentMetadata& metadata,
+    quint64 requestSerial)
+{
+    if (requestSerial != fileMetadataRequestSerial_)
+        return;
+    if (!metadata.valid || metadata.hash.compare(torrent.hash, Qt::CaseInsensitive) != 0) {
+        requestTorrentFilesViaBep9(
+            torrent, requestSerial, tr("source metadata hash mismatch"));
+        return;
+    }
+
+    const QVector<rats::domain::File> files
+        = domainFilesFromMetadata(metadata);
+    if (files.isEmpty()) {
+        requestTorrentFilesViaBep9(
+            torrent, requestSerial, tr("source metadata has no file list"));
+        return;
+    }
+
+    if (app_->torrents())
+        app_->torrents()->updateFiles(torrent.hash, files);
+
+    fileMetadataLoadingHash_.clear();
+    if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+        filesWidget->setFiles(torrent.hash,
+            metadata.name.isEmpty() ? torrent.name : metadata.name, files);
+        showStatusMessage(
+            tr("📁 Loaded %n torrent file(s)", nullptr, files.size()), 2500);
+    }
+}
+
+void MainWindow::requestTorrentFilesViaBep9(
+    const Torrent& torrent,
+    quint64 requestSerial,
+    const QString& previousError)
+{
+    if (requestSerial != fileMetadataRequestSerial_)
+        return;
+
+    auto* engine = app_ ? app_->engine() : nullptr;
+    if (!engine || !engine->isReady()) {
+        fileMetadataLoadingHash_.clear();
+        if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+            filesWidget->setError(torrent.hash, torrent.name,
+                previousError.isEmpty()
+                    ? tr("BitTorrent metadata service is unavailable")
+                    : previousError);
+        }
+        return;
+    }
+
+    QPointer<MainWindow> guard(this);
+    const bool started = engine->fetchMetadata(
+        torrent.hash,
+        [guard, torrent, requestSerial, previousError](
+            const rats::net::TorrentMetadata& metadata,
+            const QString& error) {
+            if (!guard)
+                return;
+            QMetaObject::invokeMethod(guard,
+                [guard, torrent, requestSerial, metadata, error, previousError]() {
+                    if (!guard || requestSerial != guard->fileMetadataRequestSerial_)
+                        return;
+
+                    if (metadata.valid
+                        && metadata.hash.compare(
+                               torrent.hash, Qt::CaseInsensitive) == 0) {
+                        const QVector<rats::domain::File> files
+                            = domainFilesFromMetadata(metadata);
+                        if (!files.isEmpty()) {
+                            if (guard->app_->torrents())
+                                guard->app_->torrents()->updateFiles(
+                                    torrent.hash, files);
+                            guard->fileMetadataLoadingHash_.clear();
+                            if (guard->detailsPanel
+                                && guard->detailsPanel->currentHash()
+                                    == torrent.hash) {
+                                guard->filesWidget->setFiles(
+                                    torrent.hash,
+                                    metadata.name.isEmpty()
+                                        ? torrent.name : metadata.name,
+                                    files);
+                                guard->showStatusMessage(
+                                    tr("📁 Loaded %n torrent file(s)",
+                                        nullptr, files.size()),
+                                    2500);
+                            }
+                            return;
+                        }
+                    }
+
+                    guard->fileMetadataLoadingHash_.clear();
+                    if (guard->detailsPanel
+                        && guard->detailsPanel->currentHash() == torrent.hash) {
+                        QString reason = error.trimmed();
+                        if (reason.isEmpty())
+                            reason = previousError.trimmed();
+                        if (reason.isEmpty())
+                            reason = tr("metadata not available from the swarm");
+                        guard->filesWidget->setError(
+                            torrent.hash, torrent.name, reason);
+                    }
+                },
+                Qt::QueuedConnection);
+        },
+        20000);
+
+    if (!started) {
+        fileMetadataLoadingHash_.clear();
+        if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+            filesWidget->setError(torrent.hash, torrent.name,
+                previousError.isEmpty()
+                    ? tr("could not start BitTorrent metadata request")
+                    : previousError);
+        }
+    }
+}
+
+void MainWindow::requestTorrentFiles(const Torrent& torrent)
+{
+    if (!torrent.isValid() || filesWidget->hasFiles())
+        return;
+
+    if (fileMetadataLoadingHash_ == torrent.hash) {
+        filesWidget->setLoading(torrent.hash, torrent.name);
+        return;
+    }
+
+    const quint64 requestSerial = ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_ = torrent.hash;
+    filesWidget->setLoading(torrent.hash, torrent.name);
+
+    // Best path for exact sources that expose a direct .torrent: the SAME
+    // source row binds the detail URL and download URL. Parse the metainfo and
+    // accept it only if its computed hash is identical to the verified result.
+    const QString provider
+        = torrent.info.value(QStringLiteral("sourceProvider")).toString();
+    const QUrl sourceTorrentUrl(
+        torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
+    if ((provider == QStringLiteral("rutor")
+            || provider == QStringLiteral("megapeer")
+            || provider == QStringLiteral("nnmclub"))
+        && sourceTorrentUrl.isValid()
+        && (sourceTorrentUrl.scheme() == QStringLiteral("https")
+            || sourceTorrentUrl.scheme() == QStringLiteral("http"))
+        && fileMetadataNetwork_) {
+        QNetworkReply* reply
+            = fileMetadataNetwork_->get(sourceTorrentRequest(sourceTorrentUrl));
+        connect(reply, &QNetworkReply::finished, this,
+            [this, reply, torrent, requestSerial]() {
+                const auto error = reply->error();
+                const QString errorText = reply->errorString();
+                QByteArray bytes;
+                if (error == QNetworkReply::NoError)
+                    bytes = reply->readAll();
+                reply->deleteLater();
+
+                if (requestSerial != fileMetadataRequestSerial_)
+                    return;
+
+                // Torrent metainfo is normally tiny. Refuse unexpectedly large
+                // bodies (HTML challenge/error pages included) and fall back to
+                // BEP 9 rather than feeding arbitrary data into the parser.
+                constexpr int kMaxTorrentMetadataBytes = 32 * 1024 * 1024;
+                if (error == QNetworkReply::NoError
+                    && !bytes.isEmpty()
+                    && bytes.size() <= kMaxTorrentMetadataBytes
+                    && app_->engine()) {
+                    QTemporaryFile temp(
+                        QDir::tempPath()
+                        + QStringLiteral("/rats-source-XXXXXX.torrent"));
+                    if (temp.open()
+                        && temp.write(bytes) == bytes.size()) {
+                        temp.flush();
+                        temp.close();
+                        const rats::net::TorrentMetadata metadata
+                            = app_->engine()->readTorrentFile(
+                                temp.fileName());
+                        if (metadata.valid
+                            && metadata.hash.compare(
+                                   torrent.hash, Qt::CaseInsensitive) == 0
+                            && !metadata.files.isEmpty()) {
+                            acceptResolvedTorrentFiles(
+                                torrent, metadata, requestSerial);
+                            return;
+                        }
+                    }
+                }
+
+                requestTorrentFilesViaBep9(
+                    torrent, requestSerial,
+                    error == QNetworkReply::NoError
+                        ? tr("exact source .torrent could not be verified")
+                        : tr("exact source .torrent failed: %1")
+                              .arg(errorText));
+            });
+        return;
+    }
+
+    // RuTracker.RU public search provides exact topic+magnet provenance but no
+    // stable direct .torrent URL. BEP 9 is still exact: metadata is addressed by
+    // this already-verified info-hash, not by title.
+    requestTorrentFilesViaBep9(torrent, requestSerial);
 }
 
 void MainWindow::showTorrentDetails(const Torrent& torrent)
@@ -1399,6 +1858,9 @@ void MainWindow::showTorrentDetails(const Torrent& torrent)
     filesWidget->setTorrent(torrent);
     filesWidget->show();
     verticalSplitter->setSizes({ 600, 200 });
+
+    if (!filesWidget->hasFiles())
+        requestTorrentFiles(torrent);
 }
 
 void MainWindow::openMagnetLink(const Torrent& torrent)
@@ -2214,8 +2676,7 @@ void MainWindow::setupSystemTray()
 
     QAction* quitAction = trayMenu->addAction(tr("Quit"));
     connect(quitAction, &QAction::triggered, [this]() {
-        if (app_->config())
-            app_->config()->setTrayOnClose(false); // Force actual close
+        forceQuit_ = true;
         close();
     });
 
@@ -2238,18 +2699,42 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
 
 void MainWindow::toggleWindowVisibility()
 {
-    if (isVisible() && !isMinimized())
+    if (isVisible() && !isMinimized()) {
+        hiddenToTray_ = true;
         hide();
-    else
+    } else {
         bringToFront();
+    }
 }
 
 void MainWindow::bringToFront()
 {
+    hiddenToTray_ = false;
+
+    // Clear the minimized native-window state BEFORE making a hidden window
+    // visible. The previous show() -> clear-minimized order can produce an empty
+    // NSWindow surface after a minimize-to-tray cycle on macOS.
+    if (isMinimized())
+        setWindowState(windowState() & ~Qt::WindowMinimized);
+
     show();
-    setWindowState(windowState() & ~Qt::WindowMinimized);
-    activateWindow();
+
+    // Defensive re-exposure of the central hierarchy. Qt normally keeps these
+    // widgets visible while the top-level window is hidden, but explicitly
+    // restoring them makes Dock/tray activation deterministic on macOS.
+    if (centralWidget()) {
+        centralWidget()->show();
+        if (centralWidget()->layout())
+            centralWidget()->layout()->activate();
+    }
+    if (verticalSplitter)
+        verticalSplitter->show();
+    if (tabWidget)
+        tabWidget->show();
+
     raise();
+    activateWindow();
+    update();
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
@@ -2278,6 +2763,7 @@ void MainWindow::changeEvent(QEvent* event)
     if (event->type() == QEvent::WindowStateChange) {
         bool minimizeToTray = app_ && app_->config() ? app_->config()->trayOnMinimize() : false;
         if (isMinimized() && minimizeToTray && trayIcon && trayIcon->isVisible()) {
+            hiddenToTray_ = true;
             QTimer::singleShot(0, this, &QWidget::hide);
             if (trayIcon && !trayNotificationShown_) {
                 trayIcon->showMessage(tr("Rats Search"), tr("Application minimized to tray. Click to restore."),
@@ -2304,8 +2790,7 @@ void MainWindow::loadSettings()
 
     if (resultsTableView) {
         QHeaderView* header = resultsTableView->horizontalHeader();
-        if (s.contains("search/headerState"))
-            header->restoreState(s.value("search/headerState").toByteArray());
+        s.remove(QStringLiteral("search/headerState"));
 
         if (s.contains("search/headerSortColumn")) {
             const int column = s.value("search/headerSortColumn").toInt();
@@ -2322,9 +2807,10 @@ void MainWindow::loadSettings()
         verticalSplitter->restoreState(s.value("splitters/vertical").toByteArray());
 
     if (typeComboBox) {
-        const int index = typeComboBox->findData(s.value("search/contentType", QString()).toString());
-        if (index >= 0)
-            typeComboBox->setCurrentIndex(index);
+        const QString savedType
+            = s.value(QStringLiteral("search/contentType"), QString()).toString();
+        const int index = typeComboBox->findData(savedType);
+        typeComboBox->setCurrentIndex(index >= 0 ? index : 0);
     }
     if (sortComboBox) {
         const int index = sortComboBox->findData(s.value("search/order", QStringLiteral("seeders_desc")).toString());
@@ -2352,6 +2838,15 @@ void MainWindow::loadSettings()
     if (filesMaxSpin)
         filesMaxSpin->setValue(s.value("filters/filesMax", 0).toInt());
 
+    if (sourceBadgeCheckBox) {
+        const bool showMarks
+            = s.value(QStringLiteral("search/showSourceMarks"), true).toBool();
+        QSignalBlocker block(sourceBadgeCheckBox);
+        sourceBadgeCheckBox->setChecked(showMarks);
+        if (torrentDelegate)
+            torrentDelegate->setShowSourceBadges(showMarks);
+    }
+
     if (tabWidget) {
         const int tab = s.value("tabs/current", 0).toInt();
         if (tab >= 0 && tab < tabWidget->count())
@@ -2373,7 +2868,6 @@ void MainWindow::saveSettings()
 
     if (resultsTableView) {
         QHeaderView* header = resultsTableView->horizontalHeader();
-        s.setValue("search/headerState", header->saveState());
         s.setValue("search/headerSortColumn", header->sortIndicatorSection());
         s.setValue("search/headerSortOrder", static_cast<int>(header->sortIndicatorOrder()));
     }
@@ -2400,6 +2894,8 @@ void MainWindow::saveSettings()
         s.setValue("filters/filesMin", filesMinSpin->value());
     if (filesMaxSpin)
         s.setValue("filters/filesMax", filesMaxSpin->value());
+    if (sourceBadgeCheckBox)
+        s.setValue("search/showSourceMarks", sourceBadgeCheckBox->isChecked());
 
     if (tabWidget)
         s.setValue("tabs/current", tabWidget->currentIndex());
