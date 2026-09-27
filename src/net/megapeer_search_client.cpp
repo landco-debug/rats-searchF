@@ -2,8 +2,8 @@
 
 #include "domain/content_classifier.h"
 #include "net/megapeer_source.h"
-#include "net/torrent_engine.h"
 #include "net/source_parse_utils.h"
+#include "net/torrent_engine.h"
 
 #include <algorithm>
 #include <QDir>
@@ -15,21 +15,65 @@
 namespace rats::net {
 namespace {
 
-QNetworkRequest requestFor(const QUrl& url, bool torrent = false)
+QNetworkRequest requestFor(
+    const QUrl& url, bool torrent = false, const QUrl& referer = {})
 {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader,
         QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 RatsSearch/2"));
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/154 Safari/537.36 RatsSearch/2"));
     request.setRawHeader("Accept", torrent
         ? "application/x-bittorrent,application/octet-stream,*/*;q=0.5"
         : "text/html,application/xhtml+xml");
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
-    request.setRawHeader("Referer", "https://megapeer.vip/browse.php");
+    request.setRawHeader("Referer",
+        (referer.isValid()
+                ? referer
+                : QUrl(QStringLiteral("https://megapeer.vip/browse.php")))
+            .toEncoded());
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
         QNetworkRequest::NoLessSafeRedirectPolicy);
-    request.setTransferTimeout(15000);
+    request.setTransferTimeout(20000);
     return request;
+}
+
+bool looksLikeBrowserChallenge(const QByteArray& body)
+{
+    if (body.isEmpty())
+        return false;
+    const QString text = QString::fromUtf8(body.left(256 * 1024)).toLower();
+    return text.contains(QStringLiteral("<title>just a moment"))
+        || text.contains(QStringLiteral("cf-browser-verification"))
+        || text.contains(QStringLiteral("cf_chl_"))
+        || text.contains(QStringLiteral("cf-chl-"))
+        || text.contains(QStringLiteral("attention required"))
+        || (text.contains(QStringLiteral("cloudflare"))
+            && text.contains(QStringLiteral("challenge")));
+}
+
+bool looksLikeHtml(const QByteArray& body)
+{
+    const QByteArray head = body.left(4096).trimmed().toLower();
+    return head.startsWith("<!doctype html")
+        || head.startsWith("<html")
+        || head.contains("<head")
+        || head.contains("<body");
+}
+
+QString networkFailureText(
+    const QString& context, int status, const QString& error)
+{
+    QString detail = error.trimmed();
+    if (status > 0)
+        detail = QStringLiteral("HTTP %1%2")
+                     .arg(status)
+                     .arg(detail.isEmpty()
+                             ? QString()
+                             : QStringLiteral(" · ") + detail);
+    if (detail.isEmpty())
+        detail = QStringLiteral("request failed");
+    return context + QStringLiteral(": ") + detail;
 }
 
 } // namespace
@@ -57,6 +101,7 @@ void MegaPeerSearchClient::cancel()
     accepted_ = 0;
     rejected_ = 0;
     searchResolved_ = false;
+    networkIssues_.clear();
 
     const QList<QNetworkReply*> outstanding = replies_.values();
     replies_.clear();
@@ -98,23 +143,31 @@ void MegaPeerSearchClient::fetchSearchPage(int generation)
         [this, reply, generation]() {
             replies_.remove(reply);
             const auto error = reply->error();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QString errorText = reply->errorString();
             const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const QByteArray body = reply->readAll();
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
             if (error != QNetworkReply::NoError) {
                 finishNow(generation,
-                    tr("MegaPeer search request failed: %1").arg(errorText));
+                    tr("MegaPeer search request failed: %1")
+                        .arg(networkFailureText(
+                            QStringLiteral("search"), status, errorText)));
+                return;
+            }
+            if (looksLikeBrowserChallenge(body)) {
+                finishNow(generation,
+                    tr("MegaPeer search was blocked by a browser/Cloudflare challenge."));
                 return;
             }
 
             QVector<domain::Torrent> candidates
                 = MegaPeerSource::parseSearchPage(body, finalUrl,
-                    qMin(120, qMax(requestedLimit_, requestedLimit_ * 3)));
+                    qMin(80, qMax(requestedLimit_, requestedLimit_ * 2)));
             std::stable_sort(candidates.begin(), candidates.end(),
                 [this](const domain::Torrent& a, const domain::Torrent& b) {
                     return sourceparse::contentTypeHintScore(
@@ -131,7 +184,7 @@ void MegaPeerSearchClient::fetchSearchPage(int generation)
                     .value(QStringLiteral("sourceUrl")).toString());
                 job.torrentUrl = QUrl(torrent.info
                     .value(QStringLiteral("sourceTorrentUrl")).toString());
-                if (job.detailUrl.isValid() && job.torrentUrl.isValid())
+                if (job.detailUrl.isValid())
                     queue_.enqueue(std::move(job));
                 else
                     ++rejected_;
@@ -150,34 +203,129 @@ void MegaPeerSearchClient::processQueue(int generation)
         && accepted_ < requestedLimit_) {
         Job job = queue_.dequeue();
         ++active_;
-        fetchTorrent(std::move(job), generation);
+        fetchDetail(std::move(job), generation);
     }
     if (accepted_ >= requestedLimit_)
         queue_.clear();
     finishIfIdle(generation);
 }
 
-void MegaPeerSearchClient::fetchTorrent(Job job, int generation)
+void MegaPeerSearchClient::fetchDetail(Job job, int generation)
 {
-    QNetworkReply* reply = networkManager_->get(requestFor(job.torrentUrl, true));
+    QNetworkReply* reply = networkManager_->get(
+        requestFor(job.detailUrl, false,
+            QUrl(QStringLiteral("https://megapeer.vip/browse.php"))));
     replies_.insert(reply);
     connect(reply, &QNetworkReply::finished, this,
         [this, reply, generation, job = std::move(job)]() mutable {
             replies_.remove(reply);
             const auto error = reply->error();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QString errorText = reply->errorString();
+            const QUrl finalUrl = reply->url();
+            const QByteArray body = reply->readAll();
             reply->deleteLater();
 
             if (generation != generation_ || finishedEmitted_)
                 return;
 
+            if (error != QNetworkReply::NoError) {
+                recordNetworkIssue(networkFailureText(
+                    QStringLiteral("detail"), status, errorText));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+            if (looksLikeBrowserChallenge(body)) {
+                recordNetworkIssue(
+                    tr("detail: browser/Cloudflare challenge"));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+
+            job.detailBody = body;
+            job.detailFinalUrl = finalUrl;
+
+            const bool applied = MegaPeerSource::applyDetailPage(
+                job.torrent, job.detailBody, job.detailFinalUrl);
+            if (!applied) {
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+
+            job.torrentUrl = QUrl(job.torrent.info
+                .value(QStringLiteral("sourceTorrentUrl")).toString());
+
+            const bool strict
+                = MegaPeerSource::isStrictComplete(job.torrent);
+            const bool needsIdentity
+                = !job.torrent.info
+                       .value(QStringLiteral("sourceVerified")).toBool()
+                || !job.torrent.isValid();
+            const bool needsClassification
+                = job.torrent.contentType == domain::ContentType::Unknown;
+
+            if (!strict
+                && (needsIdentity || needsClassification)
+                && job.torrentUrl.isValid()) {
+                // Only exceptional candidates pay for .torrent metadata:
+                // no magnet on the exact page, or classification cannot be
+                // proven from the page itself.
+                fetchTorrentFallback(std::move(job), generation);
+                return;
+            }
+
+            finishCandidate(std::move(job), generation, true);
+        });
+}
+
+void MegaPeerSearchClient::fetchTorrentFallback(Job job, int generation)
+{
+    QNetworkReply* reply = networkManager_->get(
+        requestFor(job.torrentUrl, true, job.detailUrl));
+    replies_.insert(reply);
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, generation, job = std::move(job)]() mutable {
+            replies_.remove(reply);
+            const auto error = reply->error();
+            const int status = reply->attribute(
+                QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QString errorText = reply->errorString();
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+
+            if (generation != generation_ || finishedEmitted_)
+                return;
+
+            if (error != QNetworkReply::NoError) {
+                recordNetworkIssue(networkFailureText(
+                    QStringLiteral("torrent fallback"), status, errorText));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+            if (looksLikeBrowserChallenge(body)) {
+                recordNetworkIssue(
+                    tr("torrent fallback: browser/Cloudflare challenge"));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+
             bool parsed = false;
             constexpr int kMaxTorrentBytes = 32 * 1024 * 1024;
-            if (error == QNetworkReply::NoError
-                && !body.isEmpty() && body.size() <= kMaxTorrentBytes) {
+            if (!body.isEmpty() && body.size() <= kMaxTorrentBytes) {
                 QTemporaryFile temp(
-                    QDir::tempPath() + QStringLiteral("/rats-megapeer-XXXXXX.torrent"));
+                    QDir::tempPath()
+                    + QStringLiteral("/rats-megapeer-XXXXXX.torrent"));
                 if (temp.open() && temp.write(body) == body.size()) {
                     temp.flush();
                     temp.close();
@@ -185,7 +333,19 @@ void MegaPeerSearchClient::fetchTorrent(Job job, int generation)
                     const TorrentMetadata metadata
                         = parser.readTorrentFile(temp.fileName());
                     if (metadata.valid && !metadata.hash.isEmpty()) {
-                        job.torrent.hash = metadata.hash.toLower();
+                        const QString metadataHash
+                            = metadata.hash.toLower();
+                        if (job.torrent.isValid()
+                            && job.torrent.hash.compare(
+                                   metadataHash, Qt::CaseInsensitive)
+                                != 0) {
+                            ++rejected_;
+                            --active_;
+                            processQueue(generation);
+                            return;
+                        }
+
+                        job.torrent.hash = metadataHash;
                         if (job.torrent.name.isEmpty())
                             job.torrent.name = metadata.name;
                         if (job.torrent.size <= 0)
@@ -201,61 +361,63 @@ void MegaPeerSearchClient::fetchTorrent(Job job, int generation)
                         const domain::Classification c
                             = domain::ContentClassifier::classify(
                                 job.torrent.name, files);
-                        job.torrent.contentType = c.type;
-                        job.torrent.contentCategory = c.category;
-                        job.torrent.info[QStringLiteral("contentTypeEvidence")]
-                            = QStringLiteral("torrent-files");
+                        if (c.type != domain::ContentType::Unknown) {
+                            job.torrent.contentType = c.type;
+                            job.torrent.contentCategory = c.category;
+                            job.torrent.info[
+                                QStringLiteral("contentTypeEvidence")]
+                                = QStringLiteral("torrent-files");
+                        }
                         parsed = job.torrent.isValid();
                     }
                 }
             }
 
             if (!parsed) {
+                if (looksLikeHtml(body)) {
+                    recordNetworkIssue(
+                        tr("torrent fallback: tracker returned HTML instead of .torrent metadata"));
+                }
                 ++rejected_;
                 --active_;
                 processQueue(generation);
                 return;
             }
-            fetchDetail(std::move(job), generation);
+
+            const bool applied = MegaPeerSource::applyDetailPage(
+                job.torrent, job.detailBody, job.detailFinalUrl);
+            finishCandidate(std::move(job), generation, applied);
         });
 }
 
-void MegaPeerSearchClient::fetchDetail(Job job, int generation)
+void MegaPeerSearchClient::finishCandidate(
+    Job job, int generation, bool detailApplied)
 {
-    QNetworkReply* reply = networkManager_->get(requestFor(job.detailUrl));
-    replies_.insert(reply);
-    connect(reply, &QNetworkReply::finished, this,
-        [this, reply, generation, job = std::move(job)]() mutable {
-            replies_.remove(reply);
-            const auto error = reply->error();
-            const QUrl finalUrl = reply->url();
-            const QByteArray body = error == QNetworkReply::NoError
-                ? reply->readAll() : QByteArray();
-            reply->deleteLater();
+    bool accepted = false;
+    if (detailApplied && MegaPeerSource::isStrictComplete(job.torrent)) {
+        const bool typeMatches = currentContentType_.isEmpty()
+            || domain::toString(job.torrent.contentType)
+                   .compare(currentContentType_, Qt::CaseInsensitive) == 0;
+        if (typeMatches && accepted_ < requestedLimit_) {
+            accepted = true;
+            ++accepted_;
+            emit resultReady(currentQuery_, job.torrent);
+        }
+    }
 
-            if (generation != generation_ || finishedEmitted_)
-                return;
+    if (!accepted)
+        ++rejected_;
+    --active_;
+    processQueue(generation);
+}
 
-            bool accepted = false;
-            if (error == QNetworkReply::NoError
-                && MegaPeerSource::applyDetailPage(
-                    job.torrent, body, finalUrl)
-                && MegaPeerSource::isStrictComplete(job.torrent)) {
-                const bool typeMatches = currentContentType_.isEmpty()
-                    || domain::toString(job.torrent.contentType)
-                           .compare(currentContentType_, Qt::CaseInsensitive) == 0;
-                if (typeMatches && accepted_ < requestedLimit_) {
-                    accepted = true;
-                    ++accepted_;
-                    emit resultReady(currentQuery_, job.torrent);
-                }
-            }
-
-            if (!accepted)
-                ++rejected_;
-            --active_;
-            processQueue(generation);
-        });
+void MegaPeerSearchClient::recordNetworkIssue(const QString& issue)
+{
+    const QString clean = issue.trimmed();
+    if (clean.isEmpty() || networkIssues_.contains(clean))
+        return;
+    if (networkIssues_.size() < 4)
+        networkIssues_.append(clean);
 }
 
 void MegaPeerSearchClient::finishIfIdle(int generation)
@@ -264,6 +426,17 @@ void MegaPeerSearchClient::finishIfIdle(int generation)
         return;
     if (!searchResolved_ || active_ != 0 || !queue_.isEmpty())
         return;
+
+    if (!networkIssues_.isEmpty()) {
+        const QString issues = networkIssues_.join(QStringLiteral(" · "));
+        finishNow(generation,
+            accepted_ > 0
+                ? tr("MegaPeer returned partial results; source/network issues: %1")
+                      .arg(issues)
+                : tr("MegaPeer produced no verified results; source/network issues: %1")
+                      .arg(issues));
+        return;
+    }
     finishNow(generation);
 }
 
