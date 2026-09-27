@@ -810,3 +810,76 @@ Handoff note:
   and only use the macOS ARM artifact whose BUILD-REVISION.txt matches the branch
   head.
 
+### Stage 27 — live-source reliability: RuTracker mirror failover, MegaPeer direct-access hardening, clickable table sorting
+
+Why this stage exists:
+- Stage 26 runtime testing still showed only Rutor/NNM results;
+- the user confirmed a working logged-in RuTracker session specifically on
+  `https://rutracker.net/forum/index.php`, while our client was hard-coded to
+  `rutracker.org`;
+- current RuTracker integrations (Jackett and the qBittorrent RuTracker plugin)
+  still list both `rutracker.org` and `rutracker.net` as official mirrors
+  and retry mirrors when one is unreachable;
+- current MegaPeer references still use `https://megapeer.vip/browse.php`,
+  Windows-1251 and `tr.table_fon`; Jackett's March 2026 no-results bug was the
+  obsolete wildcard query, which our adapter does not use;
+- current jacred-go notes that MegaPeer may now answer plain HTTP again but can
+  still return 200 error/captcha bodies, so a valid-page marker and explicit
+  anti-bot detection are required;
+- the custom SearchHeaderView replaced Qt's stock table header. A freshly
+  constructed QHeaderView has non-clickable sections by default, so the visible
+  columns could not be sorted by mouse even though model sorting existed.
+
+Commits in this stage:
+- `d46092ec955cc8c5c2bac98a17884b964a17c896`
+  `fix: add RuTracker official-mirror failover`
+- `cb6f3e0326f82b875233e12ce12afbb0ecc5e40f`
+  `fix: prefer reachable RuTracker mirror and expose challenges`
+- `fa810dde43cd6848a8169d51aa6fd67a112a9939`
+  `fix: harden MegaPeer direct requests and detect anti-bot pages`
+- `43987bf0336681067c951fa6012b94124ad95986`
+  `fix: stop rejecting exact RuTracker rows for parser sparsity`
+- `2bdaf07730db62a076dc04679d7beb040c731352`
+  `fix: stop hiding exact MegaPeer rows with sparse parsed metadata`
+- `68ae482e52a6875f98c6b684761b07392ba1b0ef`
+  `fix: make all search result headers sortable by click`
+- `b37c1904568605bd6dbcb94d91f151327c1156ed`
+  `test: keep sparse exact RuTracker releases visible`
+- `a6de157e0af0fa98b837e8ea83a3b87e0d33bf4f`
+  `test: keep sparse exact MegaPeer releases visible`
+
+Implemented:
+- RuTracker now prefers `rutracker.net` (the mirror verified by the user) and
+  automatically falls back to `rutracker.org`; each mirror uses its own fresh
+  cookie jar and the same current `/forum/login.php` + `/forum/tracker.php`
+  paths;
+- login/search responses that are redirected back to login, challenged by
+  captcha/anti-bot pages, or return unexpected non-tracker HTML now fail over to
+  the next official mirror instead of silently returning zero rows;
+- successful search/detail URLs stay on the mirror actually used, while exact
+  topic-id and magnet/hash verification remains unchanged;
+- MegaPeer requests now use a normal current Chrome-like UA plus browser-like
+  navigation headers instead of the conspicuous `RatsSearch/2` UA;
+- MegaPeer validates the current browse-page marker (`id="logo"`) and detects
+  Cloudflare/anti-bot bodies even when the HTTP status is 200, surfacing a
+  provider error rather than pretending the tracker is empty;
+- exact-source completeness no longer requires our optional codec/audio field
+  parser to recognize every label. RuTracker/MegaPeer rows are admitted when
+  exact source identity is proven and a concrete release description is present;
+  parsed quality/video/audio/subtitle fields remain enrichment only;
+- Name, Size, Seeders, Leechers and Date headers are explicitly clickable and
+  continue using SearchResultModel's local typed sort implementation.
+
+Validation:
+- new regression tests prove sparse-but-exact RuTracker and MegaPeer releases are
+  retained instead of being discarded solely because optional technical labels
+  were not parsed;
+- full CI/build must pass before handing out the Stage 27 macOS ARM DMG.
+
+Handoff:
+- branch: `stage27-source-reliability`;
+- parent accepted build: Stage 26 head
+  `5cc64dd910a2a40d0a4bef7ae6fe506e03171099`;
+- do not merge until the user confirms RuTracker/MegaPeer presence and clickable
+  sorting on macOS Sequoia.
+
