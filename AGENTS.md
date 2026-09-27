@@ -1004,3 +1004,38 @@ Handoff:
 - do not merge until macOS ARM CI passes and a restart test confirms that a
   previously successful RuTracker session continues working without a new login.
 
+
+### Stage 30 — RuTracker browser-assisted login and same-browser verification
+
+Commit message: `feat: recover RuTracker with a native browser session on macOS`.
+
+Parent: Stage 29 HEAD `97f2c6f3a4866d35e1909162a5a24a5adc64ba65`.
+Branch: `stage30-rutracker-browser-session` (do not merge until the user's
+macOS Sequoia runtime test succeeds).
+
+User observation: normal browser login and direct torrent downloads work, but
+Stage 29's non-browser HTTP login/search can encounter Cloudflare and CAPTCHA.
+
+Implemented:
+- preserve Stage 29's fast Qt path and its persisted sessions when the tracker
+  accepts them; on failure of both official mirrors, macOS uses a native WebKit
+  browser window for a user-assisted login/captcha/challenge;
+- the WebKit default website data store persists its session across restarts;
+- search and topic requests after browser login use the SAME WKWebView transport,
+  rather than copying `cf_clearance` to a Qt HTTP client with a different TLS
+  fingerprint; when browser mode is active, topics are serialized because one
+  WKWebView can navigate only one page at a time;
+- search rows still pass exact topic/magnet/info-hash validation before display;
+- browser login cancellation, navigation failure and a three-minute timeout
+  return an explicit provider error; no background service is installed;
+- WebKit is compiled only for macOS; Windows/Linux retain Stage 29's path.
+
+Limitations to validate on the actual Mac: WebKit must pass the tracker site's
+current challenge; a working Chrome session is separate from WebKit's new
+persistent store, so the first browser fallback can require one interactive
+login. The stage is a test build until the user confirms login, real results,
+restart persistence, sorting and downloads. If the site's challenge rejects
+WebKit, do not claim success or merge; inspect the provider error and adapt.
+
+Installation: quit Stage 29, drag Stage 30 over the app in Applications and
+choose Replace. Keep preferences; no clean installation or reimport.

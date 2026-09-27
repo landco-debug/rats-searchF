@@ -240,10 +240,20 @@ bool RuTrackerRuSearchClient::tryNextMirror(
     lastMirrorError_ = reason;
     const int next = mirrorIndex_ + 1;
     if (next >= mirrorBaseUrls_.size()) {
+#ifdef __APPLE__
+        // Keep all subsequent requests in WebKit. Moving only cookies back to
+        // QNetworkAccessManager would lose the browser's network fingerprint.
+        browserMode_ = true;
+        if (!browser_)
+            browser_ = std::make_unique<RuTrackerBrowser>();
+        fetchSearchPage(generation);
+        return true;
+#else
         finishNow(generation,
             tr("RuTracker failed on all official mirrors. Last error: %1")
                 .arg(reason));
         return false;
+#endif
     }
 
     mirrorIndex_ = next;
@@ -278,6 +288,11 @@ void RuTrackerRuSearchClient::setCredentials(
     if (credentialsChanged)
         clearAllPersistedSessions();
 
+#ifdef __APPLE__
+    if (browser_)
+        browser_->cancel();
+    browserMode_ = false;
+#endif
     resetMirrorCycle();
     resetCookieJar(true);
 }
@@ -301,6 +316,10 @@ void RuTrackerRuSearchClient::cancel()
     authRetried_ = false;
     searchPageResolved_ = false;
 
+#ifdef __APPLE__
+    if (browser_)
+        browser_->cancel();
+#endif
     const QList<QNetworkReply*> outstanding = replies_.values();
     replies_.clear();
     for (QNetworkReply* reply : outstanding) {
@@ -340,6 +359,12 @@ void RuTrackerRuSearchClient::search(
     qInfo() << "[RuTrackerRuSearchClient] search"
             << currentQuery_.left(80) << "limit" << requestedLimit_;
 
+#ifdef __APPLE__
+    if (browserMode_) {
+        fetchSearchPage(generation);
+        return;
+    }
+#endif
     if (authenticated_) {
         fetchSearchPage(generation);
     } else {
@@ -446,23 +471,34 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
     if (base.port() >= 0)
         url.setPort(base.port());
 
+#ifdef __APPLE__
+    if (browserMode_) {
+        browser_->get(url, [this, generation](const QByteArray& body,
+                                      const QUrl& finalUrl, const QString& error) {
+            if (generation != generation_ || finishedEmitted_)
+                return;
+            if (!error.isEmpty()) {
+                finishNow(generation, tr("RuTracker browser: %1").arg(error));
+                return;
+            }
+            handleSearchPage(generation, body, finalUrl);
+        });
+        return;
+    }
+#endif
     QNetworkReply* reply = networkManager_->get(requestFor(url));
     replies_.insert(reply);
-
     connect(reply, &QNetworkReply::finished, this,
         [this, reply, generation]() {
             replies_.remove(reply);
-
             const QNetworkReply::NetworkError error = reply->error();
             const QString errorText = reply->errorString();
             const QUrl finalUrl = reply->url();
             const QByteArray body = error == QNetworkReply::NoError
                 ? reply->readAll() : QByteArray();
             reply->deleteLater();
-
             if (generation != generation_ || finishedEmitted_)
                 return;
-
             if (error != QNetworkReply::NoError) {
                 authenticated_ = false;
                 tryNextMirror(generation,
@@ -470,83 +506,112 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                         .arg(activeMirrorBaseUrl_, errorText));
                 return;
             }
-
-            const QString pageText = sourceparse::decodeTrackerText(body);
-            const bool hasTorrentTable = pageText.contains(
-                QStringLiteral(R"(id="tor-tbl")"), Qt::CaseInsensitive)
-                || pageText.contains(
-                    QStringLiteral(R"(id='tor-tbl')"), Qt::CaseInsensitive);
-
-            if ((hasLoginForm(pageText) || finalUrl.path().contains(
-                        QStringLiteral("login.php"), Qt::CaseInsensitive))
-                && !hasTorrentTable) {
-                authenticated_ = false;
-                if (!authRetried_) {
-                    authRetried_ = true;
-                    clearPersistedSessionForActiveMirror();
-                    resetCookieJar(false);
-                    authenticate(generation);
-                    return;
-                }
-                tryNextMirror(generation,
-                    tr("%1 session returned to the login page")
-                        .arg(activeMirrorBaseUrl_));
-                return;
-            }
-
-            if (!hasTorrentTable && looksLikeChallenge(pageText)) {
-                authenticated_ = false;
-                tryNextMirror(generation,
-                    tr("%1 returned an anti-bot/captcha challenge")
-                        .arg(activeMirrorBaseUrl_));
-                return;
-            }
-
-            const int candidateCap
-                = qMin(100, qMax(requestedLimit_, requestedLimit_ * 2));
-            QVector<domain::Torrent> candidates
-                = RuTrackerRuSource::parseSearchPage(
-                    body, finalUrl, candidateCap);
-
-            if (candidates.isEmpty()) {
-                if (!hasTorrentTable) {
-                    authenticated_ = false;
-                    tryNextMirror(generation,
-                        tr("%1 returned an unexpected non-tracker page")
-                            .arg(activeMirrorBaseUrl_));
-                    return;
-                }
-                persistActiveSession();
-                searchPageResolved_ = true;
-                finishNow(generation,
-                    tr("RuTracker returned no exact torrent rows for this query."));
-                return;
-            }
-
-            persistActiveSession();
-
-            std::stable_sort(candidates.begin(), candidates.end(),
-                [this](const domain::Torrent& a, const domain::Torrent& b) {
-                    return sourceparse::contentTypeHintScore(
-                               a, currentContentType_)
-                        > sourceparse::contentTypeHintScore(
-                               b, currentContentType_);
-                });
-
-            searchPageResolved_ = true;
-            for (domain::Torrent& torrent : candidates) {
-                DetailJob job;
-                job.url = QUrl(torrent.info
-                    .value(QStringLiteral("sourceUrl")).toString());
-                job.torrent = std::move(torrent);
-                if (job.url.isValid())
-                    detailQueue_.enqueue(std::move(job));
-                else
-                    ++rejected_;
-            }
-
-            processQueue(generation);
+            handleSearchPage(generation, body, finalUrl);
         });
+}
+
+void RuTrackerRuSearchClient::handleSearchPage(
+    int generation, const QByteArray& body, const QUrl& finalUrl)
+{
+    const QString pageText = sourceparse::decodeTrackerText(body);
+    const bool hasTorrentTable = pageText.contains(
+        QStringLiteral(R"(id="tor-tbl")"), Qt::CaseInsensitive)
+        || pageText.contains(
+            QStringLiteral(R"(id='tor-tbl')"), Qt::CaseInsensitive);
+
+    if ((hasLoginForm(pageText) || finalUrl.path().contains(
+                QStringLiteral("login.php"), Qt::CaseInsensitive))
+        && !hasTorrentTable) {
+        authenticated_ = false;
+#ifdef __APPLE__
+        if (browserMode_) {
+            finishNow(generation, tr("RuTracker browser session was not authenticated."));
+            return;
+        }
+#endif
+        if (!authRetried_) {
+            authRetried_ = true;
+            clearPersistedSessionForActiveMirror();
+            resetCookieJar(false);
+            authenticate(generation);
+            return;
+        }
+        tryNextMirror(generation,
+            tr("%1 session returned to the login page")
+                .arg(activeMirrorBaseUrl_));
+        return;
+    }
+
+    if (!hasTorrentTable && looksLikeChallenge(pageText)) {
+        authenticated_ = false;
+#ifdef __APPLE__
+        if (browserMode_) {
+            finishNow(generation, tr("RuTracker browser challenge is still active."));
+            return;
+        }
+#endif
+        tryNextMirror(generation,
+            tr("%1 returned an anti-bot/captcha challenge")
+                .arg(activeMirrorBaseUrl_));
+        return;
+    }
+
+    const int candidateCap
+        = qMin(100, qMax(requestedLimit_, requestedLimit_ * 2));
+    QVector<domain::Torrent> candidates
+        = RuTrackerRuSource::parseSearchPage(
+            body, finalUrl, candidateCap);
+
+    if (candidates.isEmpty()) {
+        if (!hasTorrentTable) {
+            authenticated_ = false;
+#ifdef __APPLE__
+            if (browserMode_) {
+                finishNow(generation, tr("RuTracker browser returned no tracker table."));
+                return;
+            }
+#endif
+            tryNextMirror(generation,
+                tr("%1 returned an unexpected non-tracker page")
+                    .arg(activeMirrorBaseUrl_));
+            return;
+        }
+#ifdef __APPLE__
+        if (!browserMode_)
+#endif
+            persistActiveSession();
+        searchPageResolved_ = true;
+        finishNow(generation,
+            tr("RuTracker returned no exact torrent rows for this query."));
+        return;
+    }
+
+#ifdef __APPLE__
+    if (!browserMode_)
+#endif
+        persistActiveSession();
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+        [this](const domain::Torrent& a, const domain::Torrent& b) {
+            return sourceparse::contentTypeHintScore(
+                       a, currentContentType_)
+                > sourceparse::contentTypeHintScore(
+                       b, currentContentType_);
+        });
+
+    searchPageResolved_ = true;
+    for (domain::Torrent& torrent : candidates) {
+        DetailJob job;
+        job.url = QUrl(torrent.info
+            .value(QStringLiteral("sourceUrl")).toString());
+        job.torrent = std::move(torrent);
+        if (job.url.isValid())
+            detailQueue_.enqueue(std::move(job));
+        else
+            ++rejected_;
+    }
+
+    processQueue(generation);
 }
 
 void RuTrackerRuSearchClient::processQueue(int generation)
@@ -554,7 +619,12 @@ void RuTrackerRuSearchClient::processQueue(int generation)
     if (generation != generation_ || finishedEmitted_)
         return;
 
-    while (activeDetails_ < kMaxConcurrentDetails
+    int concurrency = kMaxConcurrentDetails;
+#ifdef __APPLE__
+    if (browserMode_)
+        concurrency = 1;
+#endif
+    while (activeDetails_ < concurrency
         && !detailQueue_.isEmpty()
         && accepted_ < requestedLimit_) {
         DetailJob job = detailQueue_.dequeue();
@@ -571,44 +641,64 @@ void RuTrackerRuSearchClient::processQueue(int generation)
 void RuTrackerRuSearchClient::fetchDetail(
     DetailJob job, int generation)
 {
+#ifdef __APPLE__
+    if (browserMode_) {
+        browser_->get(job.url, [this, generation, job = std::move(job)](
+                       const QByteArray& body, const QUrl& finalUrl,
+                       const QString& error) mutable {
+            if (generation != generation_ || finishedEmitted_)
+                return;
+            if (!error.isEmpty()) {
+                ++rejected_;
+                --activeDetails_;
+                finishNow(generation, tr("RuTracker browser detail: %1").arg(error));
+                return;
+            }
+            handleDetailPage(std::move(job), generation, body, finalUrl);
+        });
+        return;
+    }
+#endif
     QNetworkReply* reply = networkManager_->get(requestFor(job.url));
     replies_.insert(reply);
-
     connect(reply, &QNetworkReply::finished, this,
         [this, reply, generation, job = std::move(job)]() mutable {
             replies_.remove(reply);
-
             const QNetworkReply::NetworkError error = reply->error();
             const QUrl finalUrl = reply->url();
             const QByteArray body = error == QNetworkReply::NoError
                 ? reply->readAll() : QByteArray();
             reply->deleteLater();
-
             if (generation != generation_ || finishedEmitted_)
                 return;
-
-            bool accepted = false;
-            if (error == QNetworkReply::NoError
-                && RuTrackerRuSource::applyDetailPage(
-                    job.torrent, body, finalUrl)
-                && RuTrackerRuSource::isStrictComplete(job.torrent)) {
-                const bool typeMatches = currentContentType_.isEmpty()
-                    || domain::toString(job.torrent.contentType)
-                           .compare(currentContentType_, Qt::CaseInsensitive)
-                        == 0;
-                if (typeMatches && accepted_ < requestedLimit_) {
-                    accepted = true;
-                    ++accepted_;
-                    emit resultReady(currentQuery_, job.torrent);
-                }
-            }
-
-            if (!accepted)
-                ++rejected_;
-
-            --activeDetails_;
-            processQueue(generation);
+            handleDetailPage(std::move(job), generation, body, finalUrl);
         });
+}
+
+void RuTrackerRuSearchClient::handleDetailPage(
+    DetailJob job, int generation, const QByteArray& body, const QUrl& finalUrl)
+{
+    bool accepted = false;
+    if (!body.isEmpty()
+        && RuTrackerRuSource::applyDetailPage(
+            job.torrent, body, finalUrl)
+        && RuTrackerRuSource::isStrictComplete(job.torrent)) {
+        const bool typeMatches = currentContentType_.isEmpty()
+            || domain::toString(job.torrent.contentType)
+                   .compare(currentContentType_, Qt::CaseInsensitive)
+                == 0;
+        if (typeMatches && accepted_ < requestedLimit_) {
+            accepted = true;
+            ++accepted_;
+            emit resultReady(currentQuery_, job.torrent);
+        }
+    }
+
+    if (!accepted)
+        ++rejected_;
+
+    --activeDetails_;
+    processQueue(generation);
 }
 
 void RuTrackerRuSearchClient::finishIfIdle(int generation)

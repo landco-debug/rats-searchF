@@ -3,7 +3,12 @@
 
 #include "domain/torrent.h"
 
+#include <QByteArray>
 #include <QObject>
+#ifdef __APPLE__
+#include <memory>
+#include "net/rutracker_browser.h"
+#endif
 #include <QQueue>
 #include <QSet>
 #include <QString>
@@ -60,12 +65,19 @@ private:
     bool tryNextMirror(int generation, const QString& reason);
     QUrl urlOnActiveMirror(const QString& path) const;
     void fetchSearchPage(int generation);
+    void handleSearchPage(int generation, const QByteArray& body, const QUrl& finalUrl);
     void processQueue(int generation);
+    void handleDetailPage(DetailJob job, int generation,
+        const QByteArray& body, const QUrl& finalUrl);
     void fetchDetail(DetailJob job, int generation);
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
 
     QNetworkAccessManager* networkManager_ = nullptr;
+#ifdef __APPLE__
+    std::unique_ptr<RuTrackerBrowser> browser_;
+    bool browserMode_ = false;
+#endif
     QSet<QNetworkReply*> replies_;
     QQueue<DetailJob> detailQueue_;
 
