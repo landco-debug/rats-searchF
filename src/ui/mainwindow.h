@@ -7,6 +7,8 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMainWindow>
+#include <QSet>
+#include <QStringList>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
@@ -19,6 +21,9 @@
 // borrows it (non-owning).
 namespace rats::app {
 class Application;
+}
+namespace rats::net {
+struct TorrentMetadata;
 }
 
 // UI components
@@ -34,6 +39,7 @@ class QMenu;
 class QToolButton;
 class QSpinBox;
 class QDoubleSpinBox;
+class QNetworkAccessManager;
 class TopTorrentsWidget;
 class FeedWidget;
 class DownloadsWidget;
@@ -122,6 +128,10 @@ private:
     void connectServiceSignals(); // transport / repository / indexing / peers
     void connectPeerSignals(); // remote P2P results streamed into the UI
     void performSearch(const QString& query);
+    void addVerifiedSourceResult(const QString& query, const rats::domain::Torrent& torrent);
+    void finishStrictSource(
+        const QString& query, const QString& provider, int accepted,
+        int rejected, const QString& error);
 
     // Size / file-count ranges from the "Filters" popup. 0 is "no bound" on
     // every field — the shape both TorrentRepository and the P2P wire expect.
@@ -183,6 +193,15 @@ private:
 
     // Torrent detail / action helpers (used by multiple tabs)
     void showTorrentDetails(const rats::domain::Torrent& torrent);
+    void requestTorrentFiles(const rats::domain::Torrent& torrent);
+    void requestTorrentFilesViaBep9(
+        const rats::domain::Torrent& torrent,
+        quint64 requestSerial,
+        const QString& previousError = QString());
+    void acceptResolvedTorrentFiles(
+        const rats::domain::Torrent& torrent,
+        const rats::net::TorrentMetadata& metadata,
+        quint64 requestSerial);
     void openMagnetLink(const rats::domain::Torrent& torrent);
     void exportTorrentToFile(const rats::domain::Torrent& torrent);
     // A .torrent requested via exportTorrentToFile is ready: prompt for a save
@@ -221,6 +240,7 @@ private:
     QComboBox* sizeMaxUnit = nullptr;
     QSpinBox* filesMinSpin = nullptr;
     QSpinBox* filesMaxSpin = nullptr;
+    QCheckBox* sourceBadgeCheckBox = nullptr; // show exact-source mark before the type icon
     // Snapshot taken when the popup opens, so closing it only re-runs the
     // search when something actually changed.
     SearchFilters filtersOnOpen_;
@@ -230,6 +250,7 @@ private:
     QSplitter* verticalSplitter = nullptr; // Vertical: main content + files panel
     TorrentDetailsPanel* detailsPanel = nullptr;
     TorrentFilesWidget* filesWidget = nullptr; // Bottom panel for file list
+    QNetworkAccessManager* fileMetadataNetwork_ = nullptr;
 
     // Tab widgets
     TopTorrentsWidget* topTorrentsWidget = nullptr;
@@ -256,6 +277,13 @@ private:
 
     // State
     QString currentSearchQuery_;
+    quint64 fileMetadataRequestSerial_ = 0;
+    QString fileMetadataLoadingHash_;
+    QSet<QString> strictSearchHashes_;
+    int strictSourcesPending_ = 0;
+    int strictSourcesRejected_ = 0;
+    QStringList strictSourceErrors_;
+    QStringList strictSourceSummaries_;
     qint64 cachedTorrentCount_ = 0; // Local torrent count (from statistics)
     qint64 cachedRemoteTorrentCount_ = 0; // Sum of torrents advertised by peers
     // Last torrent selected in each non-search tab, so switching tabs can
@@ -266,6 +294,12 @@ private:
     QSystemTrayIcon* trayIcon = nullptr;
     QMenu* trayMenu = nullptr;
     bool trayNotificationShown_ = false;
+    // True only when this window was intentionally hidden by our tray/minimize
+    // logic. Used to distinguish a Dock activation from startMinimized.
+    bool hiddenToTray_ = false;
+    // Explicit File/Tray Quit must bypass close-to-tray without modifying the
+    // user's persisted trayOnClose setting.
+    bool forceQuit_ = false;
 
     // Set once the user has committed to installing an update. While true,
     // closeEvent() shuts the app down unconditionally — no tray-hide, no

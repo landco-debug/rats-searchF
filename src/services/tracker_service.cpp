@@ -53,7 +53,15 @@ void TrackerService::checkInfo(const QString& hash, const QString& name)
 void TrackerService::onTorrentIndexed(const domain::Torrent& torrent)
 {
     checkCounts(torrent.hash);
-    checkInfo(torrent.hash, torrent.name);
+
+    // Source-first results already carry a concrete release page that was
+    // verified against the exact info-hash. Do not immediately run the legacy
+    // post-hoc website resolver and risk attaching unrelated metadata.
+    const bool exactSource
+        = torrent.info.value(QStringLiteral("sourceVerified")).toBool(false)
+        && !torrent.info.value(QStringLiteral("sourceUrl")).toString().isEmpty();
+    if (!exactSource)
+        checkInfo(torrent.hash, torrent.name);
 }
 
 void TrackerService::onCountsScraped(const QString& hash, int seeders, int leechers, int completed)
