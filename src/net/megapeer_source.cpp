@@ -295,7 +295,11 @@ bool MegaPeerSource::applyDetailPage(
         QStringLiteral(
             R"((?:Категория|Раздел|Category)\s*:\s*([^\n]+))"),
         QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch category = categoryRe.match(description);
+    // MegaPeer keeps the category in the details table, outside the release
+    // description block on current pages. Search the full exact page text so
+    // detail-first verification can classify without forcing a .torrent fetch.
+    const QRegularExpressionMatch category = categoryRe.match(
+        sourceparse::htmlToText(html));
     if (category.hasMatch()) {
         const QString categoryText = category.captured(1).trimmed();
         info[QStringLiteral("sourceCategory")] = categoryText;
