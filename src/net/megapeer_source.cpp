@@ -1,5 +1,6 @@
 #include "net/megapeer_source.h"
 
+#include "common/infohash.h"
 #include "net/source_parse_utils.h"
 
 #include <QDate>
@@ -218,7 +219,7 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
 bool MegaPeerSource::applyDetailPage(
     domain::Torrent& torrent, const QByteArray& rawData, const QUrl& finalUrl)
 {
-    if (!torrent.isValid() || rawData.isEmpty())
+    if (rawData.isEmpty())
         return false;
 
     QUrl sourceUrl = finalUrl;
@@ -235,7 +236,9 @@ bool MegaPeerSource::applyDetailPage(
         return false;
 
     // The exact page must expose the same download id that was paired with this
-    // detail URL in the search row. Its .torrent has already supplied the hash.
+    // detail URL in the search row. This binds the detail page to the concrete
+    // search-row release before we trust either its magnet or the .torrent
+    // fallback URL.
     const QString html = sourceparse::decodeTrackerText(rawData);
     const int expectedDownload
         = torrent.info.value(QStringLiteral("sourceDownloadId")).toInt();
@@ -252,6 +255,31 @@ bool MegaPeerSource::applyDetailPage(
     }
     if (!sameDownload)
         return false;
+
+    // Current MegaPeer detail pages expose a magnet. Prefer that exact-page
+    // identity proof so a normal search does not download a .torrent for every
+    // candidate. If the page has no magnet, a caller may pre-fill torrent.hash
+    // from the exact /download/<id> .torrent and call us again; the topic and
+    // download-id checks above still bind that fallback hash to this release.
+    const QRegularExpression magnetRe(
+        QStringLiteral(R"(xt=urn:btih:([A-Fa-f0-9]{40}))"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch magnet = magnetRe.match(html);
+    if (magnet.hasMatch()) {
+        const QString hash = infohash::normalize(magnet.captured(1));
+        if (!infohash::isValid(hash))
+            return false;
+        if (!torrent.hash.isEmpty() && torrent.hash != hash)
+            return false;
+        torrent.hash = hash;
+        torrent.info[QStringLiteral("identityEvidence")]
+            = QStringLiteral("detail-magnet");
+    } else if (!torrent.isValid()) {
+        return false;
+    } else {
+        torrent.info[QStringLiteral("identityEvidence")]
+            = QStringLiteral("torrent-fallback");
+    }
 
     const QString description = relevantDescription(html, torrent.name);
     if (description.isEmpty())
