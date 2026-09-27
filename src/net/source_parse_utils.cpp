@@ -122,7 +122,7 @@ QString qualityFromName(const QString& name)
 QString decodeTrackerText(const QByteArray& bytes)
 {
     QString utf8 = QString::fromUtf8(bytes);
-    if (!utf8.contains(QChar::ReplacementCharacter))
+    if (!utf8.contains(QChar(0xFFFD)))
         return utf8;
 
     QString out;
@@ -147,7 +147,7 @@ QString decodeEntities(QString text)
     text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
     text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
     text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-    text.replace(QStringLiteral("&quot;"), QStringLiteral("""));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
     text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
     text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
     text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));

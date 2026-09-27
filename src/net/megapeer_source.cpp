@@ -4,10 +4,12 @@
 
 #include <QDate>
 #include <QDateTime>
+#include <QHash>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
+#include <QTime>
 
 namespace rats::net {
 namespace {
@@ -131,12 +133,12 @@ QVector<domain::Torrent> MegaPeerSource::parseSearchPage(
             | QRegularExpression::DotMatchesEverythingOption);
     const QRegularExpression detailRe(
         QStringLiteral(
-            R"re(<a\b[^>]*href\s*=\s*["']([^"']*/torrent/(\d+)/[^"']*)["'][^>]*>(.*?)</a>)re"),
+            R"re(<a\b[^>]*href\s*=\s*["']([^"']*/torrent/(\d+)(?:/[^"']*)?)["'][^>]*>(.*?)</a>)re"),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
     const QRegularExpression downloadRe(
         QStringLiteral(
-            R"re(<a\b[^>]*href\s*=\s*["']([^"']*/download/(\d+)/[^"']*)["'])re"),
+            R"re(<a\b[^>]*href\s*=\s*["']([^"']*/download/(\d+)(?:/[^"']*)?)["'])re"),
         QRegularExpression::CaseInsensitiveOption);
     const QRegularExpression cellRe(
         QStringLiteral(R"re(<td\b[^>]*>(.*?)</td>)re"),
@@ -237,7 +239,7 @@ bool MegaPeerSource::applyDetailPage(
     const int expectedDownload
         = torrent.info.value(QStringLiteral("sourceDownloadId")).toInt();
     const QRegularExpression downloadRe(
-        QStringLiteral(R"re(href\s*=\s*["'][^"']*/download/(\d+)/[^"']*["'])re"),
+        QStringLiteral(R"re(href\s*=\s*["'][^"']*/download/(\d+)(?:/[^"']*)?["'])re"),
         QRegularExpression::CaseInsensitiveOption);
     bool sameDownload = false;
     auto downloads = downloadRe.globalMatch(html);

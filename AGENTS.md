@@ -550,3 +550,26 @@ Combined public exact-source set after Stage 19:
 
 Semi-private/private trackers remain intentionally excluded until a separate
 credential/Keychain design is explicitly requested.
+
+
+### Stage 20 — compile correctness and public-source URL hardening
+
+Commit message: `fix: harden public source adapters`.
+
+Pre-CI static review of the combined Stage 18/19 implementation found one
+generated C++ escaping error and an unnecessarily narrow MegaPeer URL shape.
+
+Fixed:
+- corrected the HTML `&quot;` entity replacement string in the shared
+  Windows-1251/source parsing utility;
+- use an explicit U+FFFD replacement-character test rather than depending on a
+  Qt enum spelling;
+- added explicit QHash/QTime includes used by the MegaPeer date parser;
+- MegaPeer exact search/download URL parsing now accepts both
+  `/torrent/<id>/<slug>` / `/download/<id>/<slug>` and the valid compact
+  `/torrent/<id>` / `/download/<id>` forms;
+- exact detail-page download-id verification uses the same tolerant URL shape;
+- added regression coverage for compact MegaPeer URLs.
+
+No search-source scope changed: the combined no-login build remains Rutor +
+public RuTracker.RU + public MegaPeer + public/no-login NNM-Club.

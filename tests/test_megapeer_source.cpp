@@ -11,6 +11,7 @@ class TestMegaPeerSource : public QObject {
 private slots:
     void buildsSearchUrl();
     void parsesExactSearchRow();
+    void parsesIdOnlyUrls();
     void verifiesExactDownloadAndRichAudio();
     void rejectsWrongDownloadId();
 };
@@ -49,6 +50,25 @@ void TestMegaPeerSource::parsesExactSearchRow()
         .contains(QStringLiteral("/torrent/77934/")));
     QVERIFY(t.info.value(QStringLiteral("sourceTorrentUrl")).toString()
         .contains(QStringLiteral("/download/77934/")));
+}
+
+void TestMegaPeerSource::parsesIdOnlyUrls()
+{
+    const QByteArray html = R"(
+      <table>
+       <tr class="table_fon">
+        <td>28 Мая 24</td>
+        <td><a href="/torrent/123"><b>Compact URL release</b></a></td>
+        <td><a href="/download/123">download</a></td>
+        <td>700 MB</td>
+        <td><font>5</font> <font>1</font></td>
+       </tr>
+      </table>)";
+    const QVector<Torrent> rows = MegaPeerSource::parseSearchPage(
+        html, QUrl(QStringLiteral("https://megapeer.vip/browse.php")));
+    QCOMPARE(rows.size(), 1);
+    QCOMPARE(rows.first().info.value(QStringLiteral("sourceTopicId")).toInt(), 123);
+    QCOMPARE(rows.first().info.value(QStringLiteral("sourceDownloadId")).toInt(), 123);
 }
 
 void TestMegaPeerSource::verifiesExactDownloadAndRichAudio()
