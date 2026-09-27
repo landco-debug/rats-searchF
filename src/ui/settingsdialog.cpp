@@ -345,14 +345,32 @@ QWidget* SettingsDialog::createIndexerTab()
                 ruTrackerAuthorizeButton_->setEnabled(false);
                 ruTrackerBrowserStatus_->setText(
                     tr("Opening a fresh RuTracker browser session…"));
+                // This dialog is normally running inside QDialog::exec(). If it
+                // stays visible/modal, macOS routes clicks back to Settings and
+                // the native WebKit login window cannot receive credentials.
+                // Hide and drop modality only for the interactive browser step.
+                setModal(false);
+                setWindowModality(Qt::NonModal);
+                hide();
                 ruTracker->reloginInBrowser();
             });
         connect(ruTracker,
             &rats::net::RuTrackerRuSearchClient::browserAuthorizationChanged,
             this, [this](bool authorized, const QString& message) {
-                Q_UNUSED(authorized);
                 ruTrackerBrowserStatus_->setText(message);
                 ruTrackerAuthorizeButton_->setEnabled(true);
+                const bool terminalFailure
+                    = message.contains(QStringLiteral("failed"),
+                          Qt::CaseInsensitive)
+                    || message.contains(QStringLiteral("cancel"),
+                          Qt::CaseInsensitive)
+                    || message.contains(QStringLiteral("timed out"),
+                          Qt::CaseInsensitive);
+                if (authorized || terminalFailure) {
+                    show();
+                    raise();
+                    activateWindow();
+                }
             });
     }
 
@@ -387,14 +405,31 @@ QWidget* SettingsDialog::createIndexerTab()
                 kinozalAuthorizeButton_->setEnabled(false);
                 kinozalBrowserStatus_->setText(
                     tr("Opening a fresh Kinozal browser session…"));
+                // The native WKWebView must be interactive while authorization
+                // is in progress. Keeping this exec()-based Settings dialog
+                // visible/modal blocks keyboard and mouse input to that window.
+                setModal(false);
+                setWindowModality(Qt::NonModal);
+                hide();
                 kinozal->reloginInBrowser();
             });
         connect(kinozal,
             &rats::net::KinozalSearchClient::browserAuthorizationChanged,
             this, [this](bool authorized, const QString& message) {
-                Q_UNUSED(authorized);
                 kinozalBrowserStatus_->setText(message);
                 kinozalAuthorizeButton_->setEnabled(true);
+                const bool terminalFailure
+                    = message.contains(QStringLiteral("failed"),
+                          Qt::CaseInsensitive)
+                    || message.contains(QStringLiteral("cancel"),
+                          Qt::CaseInsensitive)
+                    || message.contains(QStringLiteral("timed out"),
+                          Qt::CaseInsensitive);
+                if (authorized || terminalFailure) {
+                    show();
+                    raise();
+                    activateWindow();
+                }
             });
     }
 

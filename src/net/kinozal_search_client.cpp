@@ -310,11 +310,6 @@ void KinozalSearchClient::fetchServerDetails(
 
             bool accepted = false;
             QString failure = error;
-            if (failure.isEmpty()
-                && !body.contains("Инфо хеш")
-                && !body.contains("Info hash")) {
-                failure = tr("server-details response contained no exact info-hash");
-            }
 
             if (failure.isEmpty()
                 && KinozalSource::applyServerDetails(
@@ -333,7 +328,7 @@ void KinozalSearchClient::fetchServerDetails(
                     emit resultReady(currentQuery_, job.torrent);
                 }
             } else if (failure.isEmpty()) {
-                failure = tr("server-details exact identity validation failed");
+                failure = tr("server-details response did not prove the exact info-hash");
             }
 
             if (!accepted)

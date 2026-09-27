@@ -130,7 +130,8 @@ private:
     void performSearch(const QString& query);
     void addVerifiedSourceResult(const QString& query, const rats::domain::Torrent& torrent);
     void finishStrictSource(
-        const QString& query, const QString& provider, int rejected, const QString& error);
+        const QString& query, const QString& provider, int accepted,
+        int rejected, const QString& error);
 
     // Size / file-count ranges from the "Filters" popup. 0 is "no bound" on
     // every field — the shape both TorrentRepository and the P2P wire expect.
@@ -282,6 +283,7 @@ private:
     int strictSourcesPending_ = 0;
     int strictSourcesRejected_ = 0;
     QStringList strictSourceErrors_;
+    QStringList strictSourceSummaries_;
     qint64 cachedTorrentCount_ = 0; // Local torrent count (from statistics)
     qint64 cachedRemoteTorrentCount_ = 0; // Sum of torrents advertised by peers
     // Last torrent selected in each non-search tab, so switching tabs can

@@ -966,8 +966,8 @@ void MainWindow::connectPeerSignals()
             });
         connect(source, &rats::net::RutorSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                Q_UNUSED(accepted);
-                finishStrictSource(query, QStringLiteral("Rutor"), rejected, error);
+                finishStrictSource(query, QStringLiteral("Rutor"),
+                    accepted, rejected, error);
             });
     }
 
@@ -978,8 +978,8 @@ void MainWindow::connectPeerSignals()
             });
         connect(source, &rats::net::RuTrackerRuSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                Q_UNUSED(accepted);
-                finishStrictSource(query, QStringLiteral("RuTracker.RU"), rejected, error);
+                finishStrictSource(query, QStringLiteral("RuTracker.RU"),
+                    accepted, rejected, error);
             });
     }
 
@@ -990,8 +990,8 @@ void MainWindow::connectPeerSignals()
             });
         connect(source, &rats::net::MegaPeerSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                Q_UNUSED(accepted);
-                finishStrictSource(query, QStringLiteral("MegaPeer"), rejected, error);
+                finishStrictSource(query, QStringLiteral("MegaPeer"),
+                    accepted, rejected, error);
             });
     }
 
@@ -1002,8 +1002,8 @@ void MainWindow::connectPeerSignals()
             });
         connect(source, &rats::net::NnmClubSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                Q_UNUSED(accepted);
-                finishStrictSource(query, QStringLiteral("NNM-Club"), rejected, error);
+                finishStrictSource(query, QStringLiteral("NNM-Club"),
+                    accepted, rejected, error);
             });
     }
 
@@ -1014,8 +1014,8 @@ void MainWindow::connectPeerSignals()
             });
         connect(source, &rats::net::KinozalSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                Q_UNUSED(accepted);
-                finishStrictSource(query, QStringLiteral("Kinozal"), rejected, error);
+                finishStrictSource(query, QStringLiteral("Kinozal"),
+                    accepted, rejected, error);
             });
     }
 
@@ -1130,13 +1130,20 @@ void MainWindow::addVerifiedSourceResult(
 }
 
 void MainWindow::finishStrictSource(
-    const QString& query, const QString& provider, int rejected,
-    const QString& error)
+    const QString& query, const QString& provider, int accepted,
+    int rejected, const QString& error)
 {
     if (query != currentSearchQuery_)
         return;
 
     strictSourcesRejected_ += qMax(0, rejected);
+    strictSourceSummaries_ << tr("%1 %2")
+        .arg(provider)
+        .arg(qMax(0, accepted));
+    qInfo() << "[ExactSource]" << provider
+            << "accepted" << accepted
+            << "rejected" << rejected
+            << "error" << error;
     if (!error.isEmpty())
         strictSourceErrors_ << provider + QStringLiteral(": ") + error;
 
@@ -1157,11 +1164,15 @@ void MainWindow::finishStrictSource(
     QString message = tr("✅ Verified: %1 · hidden incomplete/unverified: %2")
                           .arg(visible)
                           .arg(strictSourcesRejected_);
+    if (!strictSourceSummaries_.isEmpty()) {
+        message += tr(" · accepted by source: %1")
+                       .arg(strictSourceSummaries_.join(QStringLiteral(", ")));
+    }
     if (!strictSourceErrors_.isEmpty()) {
         message += tr(" · unavailable: %1")
                        .arg(strictSourceErrors_.join(QStringLiteral(" · ")));
     }
-    showStatusMessage(message, 6000);
+    showStatusMessage(message, 12000);
 }
 
 // --- Search filters (size / file-count ranges) ------------------------------
@@ -1357,6 +1368,7 @@ void MainWindow::performSearch(const QString& query)
     strictSearchHashes_.clear();
     strictSourcesRejected_ = 0;
     strictSourceErrors_.clear();
+    strictSourceSummaries_.clear();
     strictSourcesPending_ = 0;
 
     auto* rutor = app_->rutorSearch();
@@ -2217,19 +2229,41 @@ void MainWindow::onDarkModeChanged(bool enabled)
 void MainWindow::showSettings()
 {
     qInfo() << "Opening settings dialog";
-    SettingsDialog dialog(app_, this);
-    dialog.setStyleSheet(this->styleSheet());
 
-    if (dialog.exec() == QDialog::Accepted) {
-        qInfo() << "Settings saved by user";
-        if (dialog.needsRestart()) {
-            QMessageBox::information(this, tr("Restart Required"),
-                tr("Some changes (network ports or data directory) will take effect "
-                   "after restarting the "
-                   "application."));
-        }
-        saveSettings();
+    // Browser-based tracker authorization opens a native WKWebView window.
+    // A stack QDialog::exec() here makes Settings application-modal on macOS
+    // and blocks keyboard/mouse input to that native login window. Keep one
+    // modeless Settings window instead; Save/Cancel still finish it normally.
+    if (auto* existing
+        = findChild<SettingsDialog*>(
+            QString(), Qt::FindDirectChildrenOnly)) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
     }
+
+    auto* dialog = new SettingsDialog(app_, this);
+    dialog->setStyleSheet(this->styleSheet());
+    dialog->setWindowModality(Qt::NonModal);
+
+    connect(dialog, &QDialog::finished, this,
+        [this, dialog](int result) {
+            if (result == QDialog::Accepted) {
+                qInfo() << "Settings saved by user";
+                if (dialog->needsRestart()) {
+                    QMessageBox::information(this, tr("Restart Required"),
+                        tr("Some changes (network ports or data directory) will take effect "
+                           "after restarting the application."));
+                }
+                saveSettings();
+            }
+            dialog->deleteLater();
+        });
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void MainWindow::showAbout()

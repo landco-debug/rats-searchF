@@ -1556,3 +1556,89 @@ Handoff:
   6. repeat the search and relaunch the app to verify the working mirror/session
      remains usable.
 
+### Stage 38 — preserve Kinozal response bytes and stop Settings blocking WebKit auth
+
+Runtime evidence from the Stage 37 macOS ARM build:
+- search `терминатор` still produced Rutor/RuTracker/NNM rows but no visible
+  `KZ` rows;
+- pressing Kinozal `Authorize / Re-login` opened the native WebKit/Cloudflare
+  window behind the Settings dialog;
+- because Settings was running through `QDialog::exec()`, it was modal and the
+  user had to close Settings before the WebKit window could receive keyboard
+  input.
+
+Second Stage 37 transport bug:
+- Stage 37 correctly moved `get_srv_details.php?id=<id>&action=2` into an
+  in-page same-origin `fetch()`, matching current Kinozal browser helpers;
+- however it then called JavaScript `response.text()` and passed the resulting
+  Unicode string back to C++;
+- Kinozal remains a Windows-1251 tracker and maintained integrations explicitly
+  tolerate either UTF-8 or CP1251 server-details responses;
+- once WebKit/Fetch had already decoded a CP1251 fragment as text, C++ no longer
+  had the original bytes and the `Инфо хеш` label could be irreversibly
+  damaged before `decodeTrackerText()` ran;
+- Stage 37 additionally pre-rejected any response whose already-decoded text did
+  not literally contain `Инфо хеш` or `Info hash`.
+
+Current-site compatibility evidence checked before this change:
+- current Kinozal userscripts call the exact endpoint with same-origin GET from a
+  details page and extract the info-hash from the first `<li>`;
+- current Jackett's Kinozal magnet definition also treats the first list item as
+  the authoritative hash field;
+- therefore exact identity does not need to depend on the human-readable
+  Cyrillic label, only on the same trusted endpoint/id plus one valid 40-hex
+  token in that authoritative first item.
+
+Implemented:
+- WebKit `fetchText()` now reads `response.arrayBuffer()`, transports it to
+  Objective-C++ as base64, decodes it back to the original raw bytes, and only
+  then hands it to the existing tracker decoder;
+- no JavaScript text decoding occurs before C++ sees the server-details payload;
+- `KinozalSource::applyServerDetails()` still prefers the explicit
+  `Инфо хеш / Info hash` label, but falls back to a 40-hex token in the first
+  `<li>`, matching current Kinozal/Jackett structure;
+- the client no longer performs a duplicate pre-parser Cyrillic-label check:
+  the exact-source parser itself decides whether identity is proven;
+- Settings is now shown modelessly instead of through a stack
+  `QDialog::exec()`, so native WebKit authorization windows can receive input;
+- clicking RuTracker or Kinozal browser authorization temporarily hides Settings
+  while the interactive native browser step is running, then restores it on
+  success/cancel/failure;
+- strict-source completion now records each provider's accepted count and keeps a
+  12-second final status such as `Kinozal 4`; this distinguishes a tracker that
+  produced zero verified releases from one whose verified hashes were later
+  hidden by the existing cross-source hash deduplication rule;
+- logs now contain one `[ExactSource]` line per provider with accepted,
+  rejected and error fields.
+
+Regression coverage:
+- Kinozal server-details parsing now has a case where the human-readable hash
+  label is deliberately unusable but the authoritative first `<li>` still
+  contains the exact 40-hex info-hash;
+- existing exact URL/id, full title, file-list and mirror tests remain unchanged.
+
+Identity/persistence invariants deliberately preserved:
+- one concrete `details.php?id=<id>` and the same numeric id's exact info-hash
+  remain mandatory before a KZ row is emitted;
+- cross-source search rows are still deduplicated by info-hash for now, because
+  the database currently stores one authoritative source snapshot per hash.
+  Stage 38 only exposes per-provider accepted counts so a future multi-source
+  provenance design can be based on evidence rather than guessing.
+
+Handoff:
+- branch: `stage38-kinozal-browser-bytes`;
+- parent: Stage 37 head
+  `9f38d72613fe28c2a6b933548b843d1d0eb38624`;
+- runtime acceptance on MacBook Air M1 / macOS Sequoia:
+  1. open Settings > Indexer and press Kinozal `Authorize / Re-login`;
+  2. Settings should disappear and the Kinozal/Cloudflare window must accept
+     keyboard input immediately, without manually closing Settings;
+  3. after successful authorization Settings may reappear;
+  4. search `терминатор` and wait for the final exact-source status;
+  5. inspect the temporary `accepted by source` counts, especially Kinozal;
+  6. if `Kinozal > 0` but no KZ badge is visible, the remaining issue is
+     cross-source same-hash provenance/deduplication rather than authentication
+     or server-details transport;
+  7. if a KZ row appears, selecting it must still show the exact release link,
+     detailed description and exact hash/file metadata.
+

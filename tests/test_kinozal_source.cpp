@@ -12,6 +12,7 @@ private slots:
     void parsesFullListingTitleAndExactId();
     void preservesListingTitleOnDetailPage();
     void serverDetailsCompletesHashAndFiles();
+    void serverDetailsHashDoesNotDependOnCyrillicLabel();
     void validatesExactDetailMirrors();
 };
 
@@ -143,6 +144,35 @@ void TestKinozalSource::serverDetailsCompletesHashAndFiles()
     QCOMPARE(t.pieceLength, 8 * 1024 * 1024);
     QVERIFY(t.info.value(QStringLiteral("sourceVerified")).toBool());
     QVERIFY(KinozalSource::isStrictComplete(t));
+}
+
+void TestKinozalSource::serverDetailsHashDoesNotDependOnCyrillicLabel()
+{
+    Torrent t;
+    t.name = QStringLiteral("Encoding regression fixture");
+    t.contentType = rats::domain::ContentType::Video;
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("kinozal");
+    t.info[QStringLiteral("sourceTopicId")] = 778;
+    t.info[QStringLiteral("sourceUrl")]
+        = QStringLiteral("https://kinozal.guru/details.php?id=778");
+    t.info[QStringLiteral("detailVerified")] = true;
+    t.info[QStringLiteral("description")] = QStringLiteral(
+        "Concrete Kinozal release description long enough to satisfy the exact "
+        "source contract even when the endpoint's Cyrillic label is decoded "
+        "differently by a browser transport.");
+
+    // The authoritative first <li> still contains exactly one 40-hex hash,
+    // but its human-readable label is deliberately unusable. Current Kinozal
+    // helpers/Jackett identify this field structurally rather than by its
+    // Cyrillic spelling.
+    const QByteArray srv(
+        "<ul><li>?????????: FEDCBA9876543210FEDCBA9876543210FEDCBA98</li>"
+        "<li>piece info</li></ul>");
+
+    QVERIFY(KinozalSource::applyServerDetails(t, srv));
+    QCOMPARE(t.hash,
+        QStringLiteral("fedcba9876543210fedcba9876543210fedcba98"));
+    QVERIFY(t.info.value(QStringLiteral("sourceVerified")).toBool());
 }
 
 void TestKinozalSource::validatesExactDetailMirrors()

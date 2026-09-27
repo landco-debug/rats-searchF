@@ -19,9 +19,10 @@ public:
     ~KinozalBrowser();
 
     void get(const QUrl& url, Completion completion);
-    // Run a same-origin fetch() inside the currently loaded page. Kinozal's
-    // get_srv_details endpoint is normally called this way by its own UI, so
-    // this preserves the exact browser session, Referer and XHR semantics.
+    // Run a same-origin fetch() inside the currently loaded page and return the
+    // raw response bytes. Kinozal may answer get_srv_details in Windows-1251,
+    // so decoding it to JavaScript text first would destroy the Cyrillic labels
+    // needed by the exact-infohash parser.
     void fetchText(const QUrl& url, Completion completion);
     void authorize(const QUrl& loginUrl, Completion completion);
     void clearSession(std::function<void()> completion);

@@ -166,9 +166,13 @@ struct Pending {
          " credentials: 'same-origin',"
          " headers: {'X-Requested-With': 'XMLHttpRequest'}"
          "});"
-         "const text = await response.text();"
+         "const bytes = new Uint8Array(await response.arrayBuffer());"
+         "let binary = '';"
+         "for (let i = 0; i < bytes.length; i += 0x8000) {"
+         " binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));"
+         "}"
          "return {ok: response.ok, status: response.status,"
-         " url: response.url, text};";
+         " url: response.url, bodyBase64: btoa(binary)};";
 
     [_web callAsyncJavaScript:script
         arguments:@{@"url": absolute}
@@ -191,7 +195,7 @@ struct Pending {
             NSDictionary* response = value;
             const bool ok = [response[@"ok"] boolValue];
             const int status = [response[@"status"] intValue];
-            NSString* text = response[@"text"] ?: @"";
+            NSString* bodyBase64 = response[@"bodyBase64"] ?: @"";
             NSString* finalUrl = response[@"url"] ?: absolute;
             const QUrl resultUrl(
                 QString::fromUtf8(finalUrl.UTF8String));
@@ -203,8 +207,21 @@ struct Pending {
                 return;
             }
 
-            completion(QByteArray(text.UTF8String),
-                resultUrl, QString());
+            NSData* body = [[NSData alloc]
+                initWithBase64EncodedString:bodyBase64
+                options:0];
+            if (!body && bodyBase64.length > 0) {
+                completion(QByteArray(), resultUrl,
+                    QStringLiteral("Kinozal AJAX response could not be decoded"));
+                return;
+            }
+
+            const QByteArray bytes(
+                body.length > 0
+                    ? reinterpret_cast<const char*>(body.bytes)
+                    : "",
+                static_cast<qsizetype>(body.length));
+            completion(bytes, resultUrl, QString());
         }];
 }
 

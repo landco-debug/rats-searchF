@@ -331,15 +331,39 @@ bool KinozalSource::applyServerDetails(
 
     const QString html = sourceparse::decodeTrackerText(rawData);
     const QString text = sourceparse::htmlToText(html);
-    const QRegularExpression hashRe(
+
+    // Prefer the labelled form, but do not make exact identity depend on the
+    // encoding of the Cyrillic label. Kinozal's own UI and Jackett both treat
+    // the first <li> of get_srv_details.php as the authoritative info-hash.
+    QString capturedHash;
+    const QRegularExpression labelledHashRe(
         QStringLiteral(
             R"((?:Инфо\s*хеш|Info\s*hash)\s*:\s*([A-Fa-f0-9]{40}))"),
         QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch hashMatch = hashRe.match(text);
-    if (!hashMatch.hasMatch())
+    const QRegularExpressionMatch labelled = labelledHashRe.match(text);
+    if (labelled.hasMatch()) {
+        capturedHash = labelled.captured(1);
+    } else {
+        const QRegularExpression firstLiRe(
+            QStringLiteral(R"re(<li\b[^>]*>(.*?)</li>)re"),
+            QRegularExpression::CaseInsensitiveOption
+                | QRegularExpression::DotMatchesEverythingOption);
+        const QRegularExpressionMatch firstLi = firstLiRe.match(html);
+        if (firstLi.hasMatch()) {
+            const QString firstLiText
+                = sourceparse::stripHtml(firstLi.captured(1));
+            const QRegularExpression tokenRe(
+                QStringLiteral(R"(\b([A-Fa-f0-9]{40})\b)"));
+            const QRegularExpressionMatch token
+                = tokenRe.match(firstLiText);
+            if (token.hasMatch())
+                capturedHash = token.captured(1);
+        }
+    }
+    if (capturedHash.isEmpty())
         return false;
 
-    const QString hash = infohash::normalize(hashMatch.captured(1));
+    const QString hash = infohash::normalize(capturedHash);
     if (!infohash::isValid(hash))
         return false;
     if (!torrent.hash.isEmpty() && torrent.hash != hash)
