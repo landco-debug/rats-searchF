@@ -332,20 +332,14 @@ bool MegaPeerSource::isStrictComplete(const domain::Torrent& torrent)
     if (!isMegaPeerUrl(QUrl(info.value(QStringLiteral("sourceUrl")).toString())))
         return false;
 
+    // The exact /torrent/<id> page, the paired /download/<id>, and the exact
+    // magnet (or fallback .torrent hash) already establish release identity.
+    // Do not turn optional parser enrichment into a hard admission gate: current
+    // MegaPeer pages vary in where they place codec/audio labels, while the full
+    // concrete description is still release-specific and useful to the user.
     const QString description
         = info.value(QStringLiteral("description")).toString().trimmed();
-    if (description.size() < 120)
-        return false;
-
-    if (torrent.contentType == domain::ContentType::Video) {
-        return !info.value(QStringLiteral("quality")).toString().isEmpty()
-            && !info.value(QStringLiteral("video")).toString().isEmpty()
-            && !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
-    }
-    if (torrent.contentType == domain::ContentType::Audio)
-        return !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
-
-    return torrent.contentType != domain::ContentType::Unknown;
+    return description.size() >= 60;
 }
 
 } // namespace rats::net
