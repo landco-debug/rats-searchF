@@ -45,6 +45,7 @@ add_rats_test(test_rutor_source)
 add_rats_test(test_rutracker_ru_source)
 add_rats_test(test_megapeer_source)
 add_rats_test(test_nnmclub_source)
+add_rats_test(test_cloudflare_clearance)
 
 # The single-instance guard lives in src/bootstrap (executable-only, not in
 # ratscore), so its source is compiled straight into the test.
@@ -130,6 +131,7 @@ add_custom_target(check
             test_rutracker_ru_source
             test_megapeer_source
             test_nnmclub_source
+            test_cloudflare_clearance
             test_single_instance
             test_theme
     COMMENT "Running all tests..."
