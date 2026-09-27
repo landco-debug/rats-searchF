@@ -1007,7 +1007,7 @@ Handoff:
 
 ### Stage 30 — RuTracker browser-assisted login and same-browser verification
 
-Commit message: `feat: recover RuTracker with a native browser session on macOS`.
+Commits:\n- `8987bcb2521128c01b2b15860c810c22457fa6af` — `feat: recover RuTracker with a native browser session on macOS`;\n- `docs: record Stage 30 implementation commit and trigger CI` — this documentation follow-up.
 
 Parent: Stage 29 HEAD `97f2c6f3a4866d35e1909162a5a24a5adc64ba65`.
 Branch: `stage30-rutracker-browser-session` (do not merge until the user's
