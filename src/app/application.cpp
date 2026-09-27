@@ -11,6 +11,11 @@
 #include "data/torrent_repository.h"
 #include "domain/torrent.h"
 #include "net/crawler.h"
+#include "net/rutor_search_client.h"
+#include "net/rutracker_ru_search_client.h"
+#include "net/megapeer_search_client.h"
+#include "net/nnmclub_search_client.h"
+#include "net/kinozal_search_client.h"
 #include "net/p2p_transport.h"
 #include "net/swarm_scraper.h"
 #include "net/torrent_engine.h"
@@ -36,6 +41,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QSettings>
 
 namespace rats::app {
 
@@ -58,6 +64,11 @@ struct Application::Private {
     std::unique_ptr<net::Crawler> crawler;
     std::unique_ptr<net::SwarmScraper> swarmScraper;
     std::unique_ptr<net::TrackerSiteScraper> siteScraper;
+    std::unique_ptr<net::RutorSearchClient> rutorSearch;
+    std::unique_ptr<net::RuTrackerRuSearchClient> ruTrackerRuSearch;
+    std::unique_ptr<net::MegaPeerSearchClient> megaPeerSearch;
+    std::unique_ptr<net::NnmClubSearchClient> nnmClubSearch;
+    std::unique_ptr<net::KinozalSearchClient> kinozalSearch;
 
     // Services
     std::unique_ptr<service::FilterPolicy> filter;
@@ -122,6 +133,22 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->crawler = std::make_unique<net::Crawler>(d_->transport.get());
     d_->swarmScraper = std::make_unique<net::SwarmScraper>();
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
+    d_->rutorSearch = std::make_unique<net::RutorSearchClient>();
+    d_->ruTrackerRuSearch = std::make_unique<net::RuTrackerRuSearchClient>();
+#ifndef __APPLE__
+    {
+        // Non-macOS builds still use the legacy HTTP credential path. macOS
+        // uses one persistent WebKit session and intentionally stores no
+        // RuTracker username/password in application preferences.
+        QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+        d_->ruTrackerRuSearch->setCredentials(
+            settings.value(QStringLiteral("rutracker/username")).toString(),
+            settings.value(QStringLiteral("rutracker/password")).toString());
+    }
+#endif
+    d_->megaPeerSearch = std::make_unique<net::MegaPeerSearchClient>();
+    d_->nnmClubSearch = std::make_unique<net::NnmClubSearchClient>();
+    d_->kinozalSearch = std::make_unique<net::KinozalSearchClient>();
 
     // --- Services ---------------------------------------------------------
     d_->filter = std::make_unique<service::FilterPolicy>();
@@ -296,6 +323,11 @@ void Application::stop()
     // so no fresh tracker requests are issued during shutdown, and in-flight
     // announces / HTTP requests are drained rather than left blocking teardown.
     d_->crawler->stop();
+    d_->rutorSearch->cancel();
+    d_->ruTrackerRuSearch->cancel();
+    d_->megaPeerSearch->cancel();
+    d_->nnmClubSearch->cancel();
+    d_->kinozalSearch->cancel();
     d_->trackers->stop();
     d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
@@ -341,6 +373,26 @@ net::TorrentEngine* Application::engine() const
 net::Crawler* Application::crawler() const
 {
     return d_->crawler.get();
+}
+net::RutorSearchClient* Application::rutorSearch() const
+{
+    return d_->rutorSearch.get();
+}
+net::RuTrackerRuSearchClient* Application::ruTrackerRuSearch() const
+{
+    return d_->ruTrackerRuSearch.get();
+}
+net::MegaPeerSearchClient* Application::megaPeerSearch() const
+{
+    return d_->megaPeerSearch.get();
+}
+net::NnmClubSearchClient* Application::nnmClubSearch() const
+{
+    return d_->nnmClubSearch.get();
+}
+net::KinozalSearchClient* Application::kinozalSearch() const
+{
+    return d_->kinozalSearch.get();
 }
 service::IndexingService* Application::indexing() const
 {
