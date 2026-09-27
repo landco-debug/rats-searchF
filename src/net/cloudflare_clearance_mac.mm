@@ -10,17 +10,6 @@
 #include <QPointer>
 #include <QTimer>
 
-namespace rats::net {
-namespace {
-
-QString toQString(NSString* value)
-{
-    if (!value)
-        return {};
-    const char* utf8 = [value UTF8String];
-    return utf8 ? QString::fromUtf8(utf8) : QString();
-}
-
 @interface RatsWebNavigationDelegate : NSObject <WKNavigationDelegate>
 @property(nonatomic, copy) void (^onFinish)(void);
 @property(nonatomic, copy) void (^onFail)(NSString*);
@@ -58,6 +47,17 @@ QString toQString(NSString* value)
 }
 
 @end
+
+namespace rats::net {
+namespace {
+
+QString toQString(NSString* value)
+{
+    if (!value)
+        return {};
+    const char* utf8 = [value UTF8String];
+    return utf8 ? QString::fromUtf8(utf8) : QString();
+}
 
 } // namespace
 
