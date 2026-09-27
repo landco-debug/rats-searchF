@@ -193,7 +193,7 @@ void RuTrackerRuSearchClient::authenticate(int generation)
 
             const QString html = sourceparse::decodeTrackerText(raw);
             const bool loggedInMarker = html.contains(
-                QStringLiteral("id="logged-in-username""),
+                QStringLiteral("id=\\\"logged-in-username\\\""),
                 Qt::CaseInsensitive);
 
             if (!hasSessionCookie && !loggedInMarker) {
@@ -242,7 +242,7 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
 
             const QString pageText = sourceparse::decodeTrackerText(body);
             if (hasLoginForm(pageText)
-                && !pageText.contains(QStringLiteral("id="tor-tbl""),
+                && !pageText.contains(QStringLiteral("id=\\\"tor-tbl\\\""),
                     Qt::CaseInsensitive)) {
                 authenticated_ = false;
                 if (!authRetried_) {
