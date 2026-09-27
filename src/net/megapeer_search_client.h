@@ -3,6 +3,7 @@
 
 #include "domain/torrent.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QQueue>
 #include <QSet>
@@ -35,14 +36,18 @@ private:
         domain::Torrent torrent;
         QUrl detailUrl;
         QUrl torrentUrl;
+        QByteArray detailBody;
+        QUrl detailFinalUrl;
     };
 
     void fetchSearchPage(int generation);
     void processQueue(int generation);
-    void fetchTorrent(Job job, int generation);
     void fetchDetail(Job job, int generation);
+    void fetchTorrentFallback(Job job, int generation);
+    void finishCandidate(Job job, int generation, bool detailApplied);
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
+    void recordNetworkFailure(const QString& context, const QString& error);
 
     QNetworkAccessManager* networkManager_ = nullptr;
     QSet<QNetworkReply*> replies_;
@@ -53,14 +58,19 @@ private:
     int requestedLimit_ = 50;
     int accepted_ = 0;
     int rejected_ = 0;
+    int networkFailures_ = 0;
     bool searchResolved_ = false;
     bool finishedEmitted_ = true;
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
+    QString lastNetworkError_;
 
     static constexpr int kTimeoutMs = 15000;
-    static constexpr int kMaxConcurrent = 4;
+    // Interactive search should not fan out four detail/.torrent requests per
+    // row against a public tracker. Two detail requests at a time are enough to
+    // keep results streaming without recreating crawler-like request pressure.
+    static constexpr int kMaxConcurrent = 2;
 };
 
 } // namespace rats::net
