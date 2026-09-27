@@ -46,7 +46,8 @@ private:
         bool mirrorRetried = false;
     };
 
-    void fetchSearchPage(const QUrl& url, int generation, bool mirrorRetried);
+    void fetchSearchPage(
+        const QUrl& url, int generation, bool mirrorRetried, int page);
     void processQueue(int generation);
     void fetchTypeProbe(DetailJob job, int generation, const QUrl& torrentUrl, bool mirrorRetried = false);
     void fetchDetail(DetailJob job, int generation);
@@ -69,9 +70,12 @@ private:
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
+    QSet<QString> queuedSearchHashes_;
+    int currentCategory_ = 0;
 
     static constexpr int kTimeoutMs = 15000;
     static constexpr int kMaxConcurrentDetails = 4;
+    static constexpr int kMaxSearchPages = 3;
 };
 
 } // namespace rats::net

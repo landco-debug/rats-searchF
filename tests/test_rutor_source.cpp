@@ -11,9 +11,12 @@ class TestRutorSource : public QObject {
 
 private slots:
     void buildsRutorSearchUrl();
+    void buildsPagedCategorySearchUrl();
     void searchRowCarriesExactProvenance();
     void detailPageVerifiesSameHashAndRichReleaseInfo();
     void audioDetailPageIsStrictWithoutVideo();
+    void sourceCategoryClassifiesMajorTypes();
+    void mp3CategoryDoesNotDependOnExactMetadataLabels();
     void mismatchedDetailHashIsRejected();
     void incompleteDetailPageIsNotStrict();
 };
@@ -27,6 +30,13 @@ void TestRutorSource::buildsRutorSearchUrl()
         QStringLiteral("Police Academy 60 fps"), QStringLiteral("seeders_desc"));
     QCOMPARE(url.host(), QStringLiteral("rutor.info"));
     QCOMPARE(url.path(), QStringLiteral("/search/0/0/100/2/Police Academy 60 fps/"));
+}
+
+void TestRutorSource::buildsPagedCategorySearchUrl()
+{
+    const QUrl url = RutorSource::searchUrl(
+        QStringLiteral("Sade"), QStringLiteral("seeders_desc"), 2, 3);
+    QCOMPARE(url.path(), QStringLiteral("/search/2/3/100/2/Sade/"));
 }
 
 void TestRutorSource::searchRowCarriesExactProvenance()
@@ -123,6 +133,92 @@ void TestRutorSource::audioDetailPageIsStrictWithoutVideo()
     QVERIFY(RutorSource::applyDetailPage(t, html,
         QUrl(QStringLiteral("https://rutor.info/torrent/99/sade-diamond-life"))));
     QVERIFY(t.info.value(QStringLiteral("video")).toString().isEmpty());
+    QVERIFY(t.info.value(QStringLiteral("audioTracks")).toArray().size() >= 2);
+    QVERIFY(RutorSource::isStrictComplete(t));
+}
+
+void TestRutorSource::sourceCategoryClassifiesMajorTypes()
+{
+    struct Case {
+        const char* category;
+        rats::domain::ContentType type;
+    };
+    const Case cases[] = {
+        { "Музыка", rats::domain::ContentType::Audio },
+        { "Игры", rats::domain::ContentType::Games },
+        { "Софт", rats::domain::ContentType::Software },
+        { "Книги и журналы", rats::domain::ContentType::Books },
+        { "Картинки и обои", rats::domain::ContentType::Pictures },
+        { "Зарубежные фильмы", rats::domain::ContentType::Video },
+        { "Сериалы", rats::domain::ContentType::Video },
+    };
+
+    for (const Case& c : cases) {
+        Torrent t;
+        t.hash = kHash;
+        t.name = QStringLiteral("Exact release");
+        t.info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
+        t.info[QStringLiteral("sourceUrl")]
+            = QStringLiteral("https://rutor.info/torrent/100/exact");
+
+        const QString html = QStringLiteral(R"(
+          <html><body>
+          <table id="details"><tr><td>Описание</td><td>
+            This is a deliberately substantial exact release description with
+            concrete edition-specific information, packaging notes and source
+            provenance. It is long enough for the strict release-page policy
+            while the native tracker category supplies the content type.
+          </td></tr></table>
+          <table><tr><td>Категория</td><td>%1</td></tr></table>
+          <a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567">magnet</a>
+          </body></html>)").arg(QString::fromUtf8(c.category));
+
+        QVERIFY2(RutorSource::applyDetailPage(
+            t, html.toUtf8(),
+            QUrl(QStringLiteral("https://rutor.info/torrent/100/exact"))),
+            c.category);
+        QCOMPARE(rats::domain::toId(t.contentType),
+            rats::domain::toId(c.type));
+        QCOMPARE(t.info.value(QStringLiteral("contentTypeEvidence")).toString(),
+            QStringLiteral("source-category"));
+        QVERIFY(RutorSource::isStrictComplete(t));
+    }
+}
+
+void TestRutorSource::mp3CategoryDoesNotDependOnExactMetadataLabels()
+{
+    Torrent t;
+    t.hash = kHash;
+    t.name = QStringLiteral("Artist - Album (2005) MP3");
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
+    t.info[QStringLiteral("sourceUrl")]
+        = QStringLiteral("https://rutor.info/torrent/101/artist-album-mp3");
+
+    const QByteArray html = R"(
+      <html><body>
+      <table id="details"><tbody>
+        <tr><td>Исполнитель</td><td>Artist</td></tr>
+        <tr><td>Название</td><td>Album</td></tr>
+        <tr><td>Формат/Кодек</td><td>MP3</td></tr>
+        <tr><td>Битрейт аудио</td><td>320 kbps</td></tr>
+        <tr><td>Описание</td><td>
+          Exact MP3 edition with track listing, encoder information, source
+          notes and release-specific packaging details. The wording deliberately
+          differs from movie-style Audio #1 fields, because music releases must
+          not disappear merely because their metadata labels are different.
+        </td></tr>
+      </tbody></table>
+      <table><tr><td>Категория</td><td>Музыка</td></tr></table>
+      <a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567">magnet</a>
+      </body></html>)";
+
+    QVERIFY(RutorSource::applyDetailPage(
+        t, html, QUrl(QStringLiteral(
+            "https://rutor.info/torrent/101/artist-album-mp3"))));
+    QCOMPARE(rats::domain::toId(t.contentType),
+        rats::domain::toId(rats::domain::ContentType::Audio));
+    QCOMPARE(t.info.value(QStringLiteral("sourceCategory")).toString(),
+        QStringLiteral("Музыка"));
     QVERIFY(t.info.value(QStringLiteral("audioTracks")).toArray().size() >= 2);
     QVERIFY(RutorSource::isStrictComplete(t));
 }

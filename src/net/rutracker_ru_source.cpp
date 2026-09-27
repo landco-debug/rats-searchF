@@ -129,15 +129,29 @@ int counterFromClass(const QString& row, const QString& className)
     return m.hasMatch() ? firstInteger(m.captured(1)) : 0;
 }
 
-QJsonArray audioLines(const QString& description)
+QJsonArray audioLines(const QString& description, bool audioRelease)
 {
     QJsonArray out;
     const QStringList lines
         = description.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    const QRegularExpression technicalLine(
-        QStringLiteral("^\\s*(?:(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*|Формат|Format|Аудиокодек|Audio\\s*codec|Кодек|Codec|Битрейт|Bitrate|Тип\\s*рипа|Rip\\s*type)\\s*:"),
+    const QRegularExpression explicitAudio(
+        QStringLiteral("^\\s*(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*\\s*:"),
         QRegularExpression::CaseInsensitiveOption);
-    for (const QString& raw : lines) { const QString line=raw.trimmed(); if(technicalLine.match(line).hasMatch()) out.append(line); }
+    const QRegularExpression audioReleaseTechnical(
+        QStringLiteral(
+            "^\\s*(?:Формат(?:\\s*/\\s*Кодек)?|Format(?:\\s*/\\s*Codec)?|"
+            "Формат\\s+аудио|Audio\\s+format|Аудиокодек|Аудио\\s+кодек|"
+            "Audio\\s+codec|Кодек|Codec|Битрейт(?:\\s+аудио)?|Audio\\s+bitrate|"
+            "Качество\\s+аудио|Audio\\s+quality|Тип\\s+рипа|Rip\\s+type)\\s*:"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    for (const QString& raw : lines) {
+        const QString line = raw.trimmed();
+        if (explicitAudio.match(line).hasMatch()
+            || (audioRelease && audioReleaseTechnical.match(line).hasMatch())) {
+            out.append(line);
+        }
+    }
     return out;
 }
 
@@ -344,8 +358,15 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
         info[QStringLiteral("sourceTopicId")] = detail.captured(2).toInt();
         info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
-        const QRegularExpressionMatch forum=forumRe.match(row);
-        if(forum.hasMatch()){ const int forumId=forum.captured(1).toInt(); info[QStringLiteral("sourceForumId")]=forumId; torrent.contentType=contentTypeForForum(forumId); }
+        const QRegularExpressionMatch forum = forumRe.match(row);
+        if (forum.hasMatch()) {
+            const int forumId = forum.captured(1).toInt();
+            info[QStringLiteral("sourceForumId")] = forumId;
+            torrent.contentType = contentTypeForForum(forumId);
+            if (torrent.contentType != domain::ContentType::Unknown)
+                info[QStringLiteral("contentTypeEvidence")]
+                    = QStringLiteral("source-category");
+        }
         info[QStringLiteral("sourceVerified")] = false;
         torrent.info = info;
 
@@ -422,7 +443,8 @@ bool RuTrackerRuSource::applyDetailPage(
         if (torrent.contentType == domain::ContentType::Unknown) torrent.contentType = domain::ContentType::Video;
     }
 
-    const QJsonArray audio = audioLines(description);
+    const QJsonArray audio = audioLines(
+        description, torrent.contentType == domain::ContentType::Audio);
     if (!audio.isEmpty())
         info[QStringLiteral("audioTracks")] = audio;
 
@@ -456,13 +478,32 @@ bool RuTrackerRuSource::isStrictComplete(const domain::Torrent& torrent)
     if (!isPublicRuTrackerUrl(sourceUrl))
         return false;
 
-    const QString description=info.value(QStringLiteral("description")).toString().trimmed();
-    if(description.size()<160) return false;
-    const bool hasQuality=!info.value(QStringLiteral("quality")).toString().isEmpty();
-    const bool hasVideo=!info.value(QStringLiteral("video")).toString().isEmpty();
-    const bool hasAudio=!info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
-    if(torrent.contentType==domain::ContentType::Video || hasVideo || hasQuality) return hasQuality && hasVideo && hasAudio;
-    if(torrent.contentType==domain::ContentType::Audio) return hasAudio;
+    const QString description
+        = info.value(QStringLiteral("description")).toString().trimmed();
+    if (description.size() < 160)
+        return false;
+
+    const bool hasQuality
+        = !info.value(QStringLiteral("quality")).toString().isEmpty();
+    const bool hasVideo
+        = !info.value(QStringLiteral("video")).toString().isEmpty();
+    const bool hasAudio
+        = !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+
+    // The forum id is RuTracker's own category signal. Once an exact
+    // viewtopic page has re-proved the same info-hash, that source-native
+    // category is stronger than optional wording inside the post body.
+    if (torrent.contentType != domain::ContentType::Unknown
+        && !info.value(QStringLiteral("contentTypeEvidence")).toString().isEmpty()) {
+        return true;
+    }
+
+    if (torrent.contentType == domain::ContentType::Video
+        || hasVideo || hasQuality) {
+        return hasQuality && hasVideo && hasAudio;
+    }
+    if (torrent.contentType == domain::ContentType::Audio)
+        return hasAudio;
     return true;
 }
 

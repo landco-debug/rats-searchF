@@ -135,22 +135,84 @@ QString firstMatch(const QString& text, const QString& pattern)
     return m.hasMatch() ? m.captured(1).trimmed() : QString();
 }
 
-QJsonArray audioLines(const QString& description)
+QJsonArray audioLines(const QString& description, bool audioRelease)
 {
     QJsonArray out;
     const QStringList lines
         = description.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    const QRegularExpression technicalLine(
-        QStringLiteral("^\\s*(?:(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*|"
-                       "Формат|Format|Аудиокодек|Audio\\s*codec|Кодек|Codec|"
-                       "Битрейт|Bitrate|Тип\\s*рипа|Rip\\s*type)\\s*:"),
+
+    // Explicit audio-stream labels are useful for video too. Generic
+    // Format/Codec/Bitrate labels are only considered for a release that the
+    // source itself (or exact metainfo) has already identified as Audio; this
+    // avoids turning a video's "Формат: MKV" line into a fake audio track.
+    const QRegularExpression explicitAudio(
+        QStringLiteral("^\\s*(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*\\s*:"),
         QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression audioReleaseTechnical(
+        QStringLiteral(
+            "^\\s*(?:Формат(?:\\s*/\\s*Кодек)?|Format(?:\\s*/\\s*Codec)?|"
+            "Формат\\s+аудио|Audio\\s+format|Аудиокодек|Аудио\\s+кодек|"
+            "Audio\\s+codec|Кодек|Codec|Битрейт(?:\\s+аудио)?|Audio\\s+bitrate|"
+            "Качество\\s+аудио|Audio\\s+quality|Тип\\s+рипа|Rip\\s+type)\\s*:"),
+        QRegularExpression::CaseInsensitiveOption);
+
     for (const QString& raw : lines) {
         const QString line = raw.trimmed();
-        if (technicalLine.match(line).hasMatch())
+        if (explicitAudio.match(line).hasMatch()
+            || (audioRelease && audioReleaseTechnical.match(line).hasMatch())) {
             out.append(line);
+        }
     }
     return out;
+}
+
+domain::ContentType contentTypeForRutorCategory(QString category)
+{
+    category = category.trimmed().toLower();
+    while (category.endsWith(QLatin1Char(':')))
+        category.chop(1);
+    category = category.trimmed();
+
+    if (category.contains(QStringLiteral("музык"))
+        || category.contains(QStringLiteral("аудио"))
+        || category.contains(QStringLiteral("music"))
+        || category.contains(QStringLiteral("audio"))) {
+        return domain::ContentType::Audio;
+    }
+    if (category.contains(QStringLiteral("игр"))
+        || category.contains(QStringLiteral("game"))) {
+        return domain::ContentType::Games;
+    }
+    if (category.contains(QStringLiteral("софт"))
+        || category.contains(QStringLiteral("программ"))
+        || category.contains(QStringLiteral("software"))) {
+        return domain::ContentType::Software;
+    }
+    if (category.contains(QStringLiteral("книг"))
+        || category.contains(QStringLiteral("журнал"))
+        || category.contains(QStringLiteral("ebook"))
+        || category.contains(QStringLiteral("book"))
+        || category.contains(QStringLiteral("комикс"))) {
+        return domain::ContentType::Books;
+    }
+    if (category.contains(QStringLiteral("фото"))
+        || category.contains(QStringLiteral("картин"))
+        || category.contains(QStringLiteral("обои"))
+        || category.contains(QStringLiteral("picture"))
+        || category.contains(QStringLiteral("image"))) {
+        return domain::ContentType::Pictures;
+    }
+    if (category.contains(QStringLiteral("фильм"))
+        || category.contains(QStringLiteral("сериал"))
+        || category.contains(QStringLiteral("мульт"))
+        || category.contains(QStringLiteral("аниме"))
+        || category.contains(QStringLiteral("видео"))
+        || category.contains(QStringLiteral("movie"))
+        || category.contains(QStringLiteral("tv"))
+        || category.contains(QStringLiteral("video"))) {
+        return domain::ContentType::Video;
+    }
+    return domain::ContentType::Unknown;
 }
 
 } // namespace
@@ -174,11 +236,15 @@ int RutorSource::sortCode(const QString& sortKey)
     return 0; // date descending
 }
 
-QUrl RutorSource::searchUrl(const QString& query, const QString& sortKey)
+QUrl RutorSource::searchUrl(
+    const QString& query, const QString& sortKey, int page, int category)
 {
     const QByteArray encoded = QUrl::toPercentEncoding(query.trimmed());
-    const QByteArray url = QByteArray("https://rutor.info/search/0/0/100/")
-        + QByteArray::number(sortCode(sortKey)) + "/" + encoded + "/";
+    page = qMax(0, page);
+    category = qBound(0, category, 3);
+    const QByteArray url = QByteArray("https://rutor.info/search/")
+        + QByteArray::number(page) + "/" + QByteArray::number(category)
+        + "/100/" + QByteArray::number(sortCode(sortKey)) + "/" + encoded + "/";
     return QUrl::fromEncoded(url);
 }
 
@@ -303,6 +369,30 @@ bool RutorSource::applyDetailPage(
     info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("description")] = description;
 
+    // Rutor exposes a tracker-native category on the exact release page
+    // ("Категория: Музыка", "Игры", "Софт", "Зарубежные фильмы", ...).
+    // Treat it as the primary content-type signal, just as mature torrent
+    // indexers map native tracker categories before falling back to filenames.
+    const QString fullText = htmlToText(html);
+    QString sourceCategory = firstMatch(fullText,
+        QStringLiteral(R"((?:Категория|Category)\s*:\s*([^\n]+))"));
+    if (!sourceCategory.isEmpty()) {
+        sourceCategory = sourceCategory.section(QLatin1Char(':'), 0, 0).trimmed();
+        while (sourceCategory.endsWith(QLatin1Char(':')))
+            sourceCategory.chop(1);
+        sourceCategory = sourceCategory.trimmed();
+        if (!sourceCategory.isEmpty()) {
+            info[QStringLiteral("sourceCategory")] = sourceCategory;
+            const domain::ContentType sourceType
+                = contentTypeForRutorCategory(sourceCategory);
+            if (sourceType != domain::ContentType::Unknown) {
+                torrent.contentType = sourceType;
+                info[QStringLiteral("contentTypeEvidence")]
+                    = QStringLiteral("source-category");
+            }
+        }
+    }
+
     QString quality = firstMatch(description,
         QStringLiteral(R"((?:Качество|Quality)\s*:\s*([^\n]+))"));
     if (quality.isEmpty()) {
@@ -324,7 +414,8 @@ bool RutorSource::applyDetailPage(
             torrent.contentType = domain::ContentType::Video;
     }
 
-    const QJsonArray audio = audioLines(description);
+    const QJsonArray audio = audioLines(
+        description, torrent.contentType == domain::ContentType::Audio);
     if (!audio.isEmpty())
         info[QStringLiteral("audioTracks")] = audio;
 
@@ -359,6 +450,15 @@ bool RutorSource::isStrictComplete(const domain::Torrent& torrent)
     const bool hasQuality = !info.value(QStringLiteral("quality")).toString().isEmpty();
     const bool hasVideo = !info.value(QStringLiteral("video")).toString().isEmpty();
     const bool hasAudio = !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
+
+    // Source-native category or exact .torrent file classification is stronger
+    // type evidence than the presence/wording of optional technical labels.
+    // Do not hide a valid MP3/FLAC/game/book/software release merely because its
+    // description uses a label our presentation parser does not know yet.
+    if (torrent.contentType != domain::ContentType::Unknown
+        && !info.value(QStringLiteral("contentTypeEvidence")).toString().isEmpty()) {
+        return true;
+    }
 
     if (torrent.contentType == domain::ContentType::Video || hasVideo || hasQuality)
         return hasQuality && hasVideo && hasAudio;

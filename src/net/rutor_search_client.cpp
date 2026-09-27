@@ -29,6 +29,8 @@ void RutorSearchClient::cancel()
     currentQuery_.clear();
     currentSortKey_.clear();
     currentContentType_.clear();
+    queuedSearchHashes_.clear();
+    currentCategory_ = 0;
     detailQueue_.clear();
     activeDetails_ = 0;
     accepted_ = 0;
@@ -51,6 +53,13 @@ void RutorSearchClient::search(
     currentQuery_ = query.trimmed();
     currentSortKey_ = sortKey;
     currentContentType_ = contentType.trimmed().toLower();
+    // Rutor's search form exposes three coarse buckets: Movies, TV and Other.
+    // Music/games/software/books live under Other. Video stays on All because it
+    // spans both Movies and TV.
+    currentCategory_ = (!currentContentType_.isEmpty()
+                           && currentContentType_ != QStringLiteral("video"))
+        ? 3
+        : 0;
     requestedLimit_ = qBound(1, limit, 50);
     accepted_ = 0;
     rejected_ = 0;
@@ -67,8 +76,9 @@ void RutorSearchClient::search(
     qInfo() << "[RutorSearchClient] search" << currentQuery_.left(80)
             << "limit" << requestedLimit_;
     fetchSearchPage(
-        RutorSource::searchUrl(currentQuery_, currentSortKey_),
-        generation, false);
+        RutorSource::searchUrl(
+            currentQuery_, currentSortKey_, 0, currentCategory_),
+        generation, false, 0);
 }
 
 QUrl RutorSearchClient::alternateMirror(const QUrl& url)
@@ -82,7 +92,7 @@ QUrl RutorSearchClient::alternateMirror(const QUrl& url)
 }
 
 void RutorSearchClient::fetchSearchPage(
-    const QUrl& url, int generation, bool mirrorRetried)
+    const QUrl& url, int generation, bool mirrorRetried, int page)
 {
     if (generation != generation_ || finishedEmitted_)
         return;
@@ -102,7 +112,7 @@ void RutorSearchClient::fetchSearchPage(
     replies_.insert(reply);
 
     connect(reply, &QNetworkReply::finished, this,
-        [this, reply, generation, mirrorRetried, url]() {
+        [this, reply, generation, mirrorRetried, url, page]() {
             replies_.remove(reply);
 
             const QNetworkReply::NetworkError error = reply->error();
@@ -115,7 +125,7 @@ void RutorSearchClient::fetchSearchPage(
             if (generation != generation_ || finishedEmitted_)
                 return;
 
-            const int candidateCap = qMin(100, qMax(requestedLimit_, requestedLimit_ * 3));
+            const int candidateCap = 200;
             QVector<domain::Torrent> candidates;
             if (error == QNetworkReply::NoError)
                 candidates = RutorSource::parseSearchPage(body, finalUrl, candidateCap);
@@ -124,7 +134,8 @@ void RutorSearchClient::fetchSearchPage(
                 && !mirrorRetried) {
                 qInfo() << "[RutorSearchClient] primary search failed/empty;"
                            " retrying mirror";
-                fetchSearchPage(alternateMirror(url), generation, true);
+                fetchSearchPage(
+                    alternateMirror(url), generation, true, page);
                 return;
             }
 
@@ -136,13 +147,20 @@ void RutorSearchClient::fetchSearchPage(
 
             if (candidates.isEmpty()) {
                 searchPageResolved_ = true;
-                finishNow(generation,
-                    tr("Rutor returned no exact torrent rows for this query."));
+                if (page == 0 && detailQueue_.isEmpty() && activeDetails_ == 0) {
+                    finishNow(generation,
+                        tr("Rutor returned no exact torrent rows for this query."));
+                    return;
+                }
+                processQueue(generation);
                 return;
             }
 
-            searchPageResolved_ = true;
             for (domain::Torrent& torrent : candidates) {
+                if (queuedSearchHashes_.contains(torrent.hash))
+                    continue;
+                queuedSearchHashes_.insert(torrent.hash);
+
                 DetailJob job;
                 job.url = QUrl(
                     torrent.info.value(QStringLiteral("sourceUrl")).toString());
@@ -154,6 +172,18 @@ void RutorSearchClient::fetchSearchPage(
             }
 
             processQueue(generation);
+
+            if (page + 1 < kMaxSearchPages
+                && accepted_ < requestedLimit_) {
+                fetchSearchPage(
+                    RutorSource::searchUrl(currentQuery_, currentSortKey_,
+                        page + 1, currentCategory_),
+                    generation, false, page + 1);
+                return;
+            }
+
+            searchPageResolved_ = true;
+            finishIfIdle(generation);
         });
 }
 
@@ -165,15 +195,9 @@ void RutorSearchClient::processQueue(int generation)
     while (activeDetails_ < kMaxConcurrentDetails
         && !detailQueue_.isEmpty()
         && accepted_ < requestedLimit_) {
-        DetailJob job=detailQueue_.dequeue();
+        DetailJob job = detailQueue_.dequeue();
         ++activeDetails_;
-        if(!currentContentType_.isEmpty()){
-            const QUrl torrentUrl(job.torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
-            if(!torrentUrl.isValid()){ ++rejected_; --activeDetails_; continue; }
-            fetchTypeProbe(std::move(job),generation,torrentUrl);
-        } else {
-            fetchDetail(std::move(job),generation);
-        }
+        fetchDetail(std::move(job), generation);
     }
 
     if (accepted_ >= requestedLimit_)
@@ -209,15 +233,34 @@ void RutorSearchClient::fetchTypeProbe(DetailJob job, int generation, const QUrl
                     QVector<domain::File> files; files.reserve(metadata.files.size());
                     for(const EngineFile& source:metadata.files) files.append(domain::File{source.path,source.size});
                     const domain::Classification c=domain::ContentClassifier::classify(job.torrent.name,files);
-                    job.torrent.contentType=c.type; job.torrent.contentCategory=c.category;
-                    job.torrent.fileList=files; job.torrent.files=files.size();
-                    if(job.torrent.size<=0) job.torrent.size=metadata.totalSize;
-                    matched=domain::toString(job.torrent.contentType).compare(currentContentType_,Qt::CaseInsensitive)==0;
+                    job.torrent.contentType = c.type;
+                    job.torrent.contentCategory = c.category;
+                    job.torrent.fileList = files;
+                    job.torrent.files = files.size();
+                    if (job.torrent.size <= 0)
+                        job.torrent.size = metadata.totalSize;
+                    if (job.torrent.contentType != domain::ContentType::Unknown)
+                        job.torrent.info[QStringLiteral("contentTypeEvidence")]
+                            = QStringLiteral("torrent-files");
+                    matched = domain::toString(job.torrent.contentType)
+                                  .compare(currentContentType_,
+                                      Qt::CaseInsensitive)
+                        == 0;
                 }
             }
         }
-        if(matched){ fetchDetail(std::move(job),generation); return; }
-        ++rejected_; --activeDetails_; processQueue(generation);
+
+        if (matched
+            && RutorSource::isStrictComplete(job.torrent)
+            && accepted_ < requestedLimit_) {
+            ++accepted_;
+            emit resultReady(currentQuery_, job.torrent);
+        } else {
+            ++rejected_;
+        }
+
+        --activeDetails_;
+        processQueue(generation);
     });
 }
 
@@ -264,13 +307,34 @@ void RutorSearchClient::fetchDetail(DetailJob job, int generation)
                 && RutorSource::applyDetailPage(job.torrent, body, finalUrl)
                 && RutorSource::isStrictComplete(job.torrent)
                 && accepted_ < requestedLimit_) {
-                accepted = true;
-                ++accepted_;
-                emit resultReady(currentQuery_, job.torrent);
+
+                if (currentContentType_.isEmpty()) {
+                    accepted = true;
+                } else if (job.torrent.contentType != domain::ContentType::Unknown) {
+                    accepted = domain::toString(job.torrent.contentType)
+                                   .compare(currentContentType_,
+                                       Qt::CaseInsensitive)
+                        == 0;
+                } else {
+                    // The exact page did not expose a category we recognise.
+                    // Fall back to the exact .torrent's real file list instead
+                    // of guessing from the release title.
+                    const QUrl torrentUrl(job.torrent.info
+                        .value(QStringLiteral("sourceTorrentUrl")).toString());
+                    if (torrentUrl.isValid()) {
+                        fetchTypeProbe(
+                            std::move(job), generation, torrentUrl);
+                        return; // same concurrency slot remains active
+                    }
+                }
             }
 
-            if (!accepted)
+            if (accepted) {
+                ++accepted_;
+                emit resultReady(currentQuery_, job.torrent);
+            } else {
                 ++rejected_;
+            }
 
             --activeDetails_;
             processQueue(generation);

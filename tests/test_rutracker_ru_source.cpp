@@ -101,6 +101,8 @@ void TestRuTrackerRuSource::audioForumClassifiesAudio()
     QCOMPARE(torrents.size(),1);
     QCOMPARE(torrents.first().info.value(QStringLiteral("sourceForumId")).toInt(),1666);
     QCOMPARE(rats::domain::toId(torrents.first().contentType),rats::domain::toId(rats::domain::ContentType::Audio));
+    QCOMPARE(torrents.first().info.value(QStringLiteral("contentTypeEvidence")).toString(),
+        QStringLiteral("source-category"));
 }
 
 void TestRuTrackerRuSource::detailPageVerifiesExactHashAndRichInfo()
@@ -149,6 +151,7 @@ void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()
     t.info[QStringLiteral("sourceProvider")]=QStringLiteral("rutracker-ru");
     t.info[QStringLiteral("sourceTopicId")]=778;
     t.info[QStringLiteral("sourceForumId")]=1666;
+    t.info[QStringLiteral("contentTypeEvidence")]=QStringLiteral("source-category");
     t.info[QStringLiteral("sourceUrl")]=QStringLiteral("http://rutracker.ru/viewtopic.php?t=778");
     const QByteArray html=R"(
       <h1 id="topic-title">Sade - Diamond Life [FLAC]</h1>
@@ -156,8 +159,8 @@ void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()
       <div class="post_body">
       Исполнитель: Sade<span class="post-br"></span>
       Альбом: Diamond Life<span class="post-br"></span>
-      Формат: FLAC<span class="post-br"></span>
-      Битрейт: Lossless<span class="post-br"></span>
+      Формат/Кодек: MP3<span class="post-br"></span>
+      Битрейт аудио: 320 kbps<span class="post-br"></span>
       Тип рипа: tracks + .cue<span class="post-br"></span>
       Подробное описание конкретной музыкальной раздачи, включая издание, источник рипа,
       треклист и технические параметры lossless-аудио. Этот текст намеренно достаточно длинный

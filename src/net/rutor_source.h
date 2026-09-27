@@ -19,7 +19,11 @@ class RutorSource {
 public:
     // Build Rutor's title-search URL. sortKey uses the GUI naming convention
     // (seeders_desc, size_asc, added_desc, name_asc, ...).
-    static QUrl searchUrl(const QString& query, const QString& sortKey = QStringLiteral("seeders_desc"));
+    static QUrl searchUrl(
+        const QString& query,
+        const QString& sortKey = QStringLiteral("seeders_desc"),
+        int page = 0,
+        int category = 0);
 
     // Parse exact source rows. Returned torrents carry unverified provenance in
     // Torrent::info: sourceProvider, sourceTopicId, sourceUrl, sourceVerified.

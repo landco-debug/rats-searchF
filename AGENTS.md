@@ -416,3 +416,46 @@ Implemented:
 Tests cover Rutor strict audio, RuTracker audio forum query, RuTracker forum-to-type mapping, and strict RuTracker audio without fake video fields.
 
 Identity invariants remain unchanged: exact source page and exact info-hash are mandatory; no title-only provenance is accepted.
+
+
+### Stage 17 — source-native content categories and deeper exact-source search
+
+Commit message: `fix: classify by tracker category before file heuristics`.
+
+Problem reproduced from macOS screenshots:
+- a release could appear under All types but disappear under Audio even when its title/file set was clearly FLAC/MP3;
+- typed Rutor search in Stage 16 made the exact .torrent download a mandatory precondition, so a missing/blocked .torrent link or an unrecognised description label could hide a valid exact release;
+- Audio strict-completeness still depended on a small list of metadata labels;
+- broad Rutor queries examined only the first result page, so valid releases could be omitted before type filtering.
+
+Design change, following the pattern used by mature torrent indexers:
+- tracker-native category is primary type evidence;
+- exact .torrent file-list classification is a fallback when the source category is absent/unknown;
+- title/technical-label heuristics are presentation/fallback evidence, not the primary admission gate.
+
+Implemented for Rutor:
+- parse the exact release page's native `Категория` value and map common categories to Video/Audio/Games/Software/Books/Pictures;
+- store `sourceCategory` and `contentTypeEvidence=source-category`;
+- typed search now fetches/verifies the exact release page first; it no longer rejects a result merely because the .torrent pre-probe failed;
+- only an unknown/unmapped source category falls back to exact .torrent file classification, which is marked `contentTypeEvidence=torrent-files`;
+- non-video typed searches use Rutor's coarse Other bucket (category 3), reducing the flood of movie/TV rows before filtering;
+- search traverses up to three Rutor result pages and de-duplicates info-hashes across pages;
+- searchUrl now supports explicit page/category while keeping the existing default URL unchanged;
+- MP3/FLAC metadata parsing recognises real-world labels such as `Формат/Кодек`, `Формат аудио`, `Битрейт аудио`, `Аудио кодек`, etc.;
+- generic Format/Codec labels are treated as audio only after the release is already known to be Audio, so video `Формат: MKV` is not misrepresented as an audio track;
+- source-category or exact-file-list evidence is sufficient for strict type admission once the exact page and info-hash are verified; optional wording of technical fields no longer hides a valid release.
+
+Implemented for public RuTracker.RU:
+- mapped forum IDs now explicitly carry `contentTypeEvidence=source-category`;
+- exact forum category evidence is sufficient for typed admission after exact viewtopic/info-hash verification;
+- the same broader music metadata labels are parsed for display.
+
+Important search-coverage note:
+- Search Results still deliberately uses only exact-source Rutor + public RuTracker.RU adapters. The old local/P2P/DHT corpus is not admitted because it does not prove a concrete tracker release page.
+- Stage 17 improves recall inside those two sources (especially Rutor) but does not claim global torrent coverage. Adding another tracker requires another exact-source adapter rather than silently reintroducing unverified generic hits.
+
+Validation added:
+- Rutor page/category URL construction;
+- Rutor native categories map Music/Games/Software/Books/Pictures/Video correctly;
+- MP3 release with `Формат/Кодек` + `Битрейт аудио` remains Audio and strict-complete;
+- RuTracker forum-based Audio evidence is retained and accepts MP3-style labels.
