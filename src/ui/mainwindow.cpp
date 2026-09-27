@@ -339,8 +339,17 @@ void MainWindow::setupUi()
     resultsTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     resultsTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     resultsTableView->setAlternatingRowColors(true);
+
+    // A freshly constructed QHeaderView is not clickable by default. The
+    // custom SearchHeaderView replaced QTableView's stock header, so visual
+    // sort indicators were restored but mouse clicks never changed them.
+    // Explicitly enable clickable sections before enabling table sorting.
+    QHeaderView* searchHeader = resultsTableView->horizontalHeader();
+    searchHeader->setSectionsClickable(true);
+    searchHeader->setSortIndicatorShown(true);
+    searchHeader->setSortIndicatorClearable(false);
     resultsTableView->setSortingEnabled(true);
-    resultsTableView->horizontalHeader()->setStretchLastSection(false);
+    searchHeader->setStretchLastSection(false);
     resultsTableView->verticalHeader()->setVisible(false);
     resultsTableView->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     resultsTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
