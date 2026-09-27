@@ -15,6 +15,7 @@ private slots:
     void parsesIdOnlyUrls();
     void detailMagnetProvidesIdentityAndRichAudio();
     void torrentHashFallbackStillVerifiesExactPage();
+    void sparseExactReleaseIsNotHiddenByFieldParsing();
     void rejectsWrongDownloadId();
     void rejectsConflictingMagnetHash();
 };
@@ -147,6 +148,39 @@ void TestMegaPeerSource::torrentHashFallbackStillVerifiesExactPage()
             "https://megapeer.vip/torrent/101/artist-album"))));
     QCOMPARE(t.info.value(QStringLiteral("identityEvidence")).toString(),
         QStringLiteral("torrent-fallback"));
+    QVERIFY(MegaPeerSource::isStrictComplete(t));
+}
+
+
+void TestMegaPeerSource::sparseExactReleaseIsNotHiddenByFieldParsing()
+{
+    Torrent t;
+    t.name = QStringLiteral("Exact MegaPeer release");
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("megapeer");
+    t.info[QStringLiteral("sourceTopicId")] = 102;
+    t.info[QStringLiteral("sourceDownloadId")] = 102;
+    t.info[QStringLiteral("sourceUrl")]
+        = QStringLiteral("https://megapeer.vip/torrent/102/exact-release");
+    t.info[QStringLiteral("sourceTorrentUrl")]
+        = QStringLiteral("https://megapeer.vip/download/102/exact-release.torrent");
+
+    const QByteArray html = R"(
+      <html><body>
+       <a href="/download/102/exact-release.torrent">torrent</a>
+       <a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567">magnet</a>
+       <div>
+        Информация о раздаче<br>
+        Описание: Это конкретная страница MegaPeer с достаточно подробным
+        описанием данного релиза, но без стандартных строк Качество, Видео или
+        Аудио. Точная страница, download id и magnet всё равно однозначно
+        подтверждают идентичность раздачи.
+       </div>
+      </body></html>)";
+
+    QVERIFY(MegaPeerSource::applyDetailPage(
+        t, html, QUrl(QStringLiteral(
+            "https://megapeer.vip/torrent/102/exact-release"))));
+    QVERIFY(t.info.value(QStringLiteral("sourceVerified")).toBool());
     QVERIFY(MegaPeerSource::isStrictComplete(t));
 }
 
