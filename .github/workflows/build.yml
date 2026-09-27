@@ -351,16 +351,26 @@ jobs:
           cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
           ln -s /Applications dmg-contents/Applications
           
-          # Create DMG
-          hdiutil create \
-            -volname "Rats Search" \
-            -srcfolder dmg-contents \
-            -ov \
-            -format UDZO \
-            "$DMG_NAME"
-          
-          echo "Created: $DMG_NAME"
-          ls -la "$DMG_NAME"
+          # hdiutil can report "Resource busy" on shared macOS runners after
+          # signing. Retry transient failures; always deliver the signed app
+          # as a ZIP if the disk-image service remains unavailable.
+          for attempt in 1 2 3; do
+            if hdiutil create \
+              -volname "Rats Search" \
+              -srcfolder dmg-contents \
+              -ov \
+              -format UDZO \
+              "$DMG_NAME"; then
+              echo "Created: $DMG_NAME"
+              exit 0
+            fi
+            rm -f "$DMG_NAME"
+            sleep 10
+          done
+          ZIP_NAME="RatsSearch-macOS-ARM-${VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dmg-contents/Rats Search.app" "$ZIP_NAME"
+          echo "Created ZIP fallback: $ZIP_NAME"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
@@ -564,7 +574,9 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: RatsSearch-macOS-ARM
-          path: RatsSearch-macOS-ARM-*.dmg
+          path: |
+            RatsSearch-macOS-ARM-*.dmg
+            RatsSearch-macOS-ARM-*.zip
           retention-days: 30
 
   build-linux:

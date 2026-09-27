@@ -1039,3 +1039,13 @@ WebKit, do not claim success or merge; inspect the provider error and adapt.
 
 Installation: quit Stage 29, drag Stage 30 over the app in Applications and
 choose Replace. Keep preferences; no clean installation or reimport.
+
+Stage 30 CI/package follow-up (commit message:
+`ci: retry macOS DMG creation and provide signed ZIP fallback`):
+- Run #36345412421 compiled macOS ARM successfully, passed tests, validated
+  the arm64 bundle and passed code-signing verification; `hdiutil create`
+  then failed with `Resource busy` on the shared macOS runner;
+- retry transient `hdiutil` errors three times; if they persist, package the
+  same signed app with macOS `ditto` and upload ZIP instead of losing a
+  successfully built test binary;
+- the fallback changes packaging only, not RuTracker behavior or source logic.
