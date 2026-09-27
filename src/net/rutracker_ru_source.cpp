@@ -207,11 +207,16 @@ int RuTrackerRuSource::sortDirection(const QString& sortKey)
 }
 
 QUrl RuTrackerRuSource::searchUrl(
-    const QString& query, const QString& sortKey, const QString& contentType)
+    const QString& query, const QString& sortKey, const QString& contentType,
+    const QUrl& baseUrl)
 {
     Q_UNUSED(contentType);
 
-    QUrl url(QStringLiteral("https://rutracker.org/forum/tracker.php"));
+    QUrl url = baseUrl;
+    if (!url.isValid() || !isRuTrackerHost(url.host()))
+        url = QUrl(QStringLiteral("https://rutracker.net"));
+    url.setPath(QStringLiteral("/forum/tracker.php"));
+    url.setQuery(QString());
     QUrlQuery q;
     // Keep server-side category scope broad. RuTracker forum IDs evolve and a
     // stale hand-maintained mapping must never make a typed search lose recall.
