@@ -1121,3 +1121,64 @@ Browser diagnostics/readiness:
 Runtime limitation: the supplied log confirms the failing stage, not the
 specific HTML shape on the user's Mac. This fixes a reproduced defect and adds
 the missing evidence if another case remains. Keep PR #15 draft until accepted.
+
+### Stage 32 — current RuTracker search request after successful browser authentication
+
+Evidence from the user's Stage 31 runtime log (2026-09-28):
+- query `багровый прилив`:
+  - WebKit reached `/forum/tracker.php`;
+  - `table=true`;
+  - `rows=1`;
+  - `topicLinks=0`;
+  - parsed candidates = 0;
+- query `терминатор` produced the same shape:
+  - `table=true`;
+  - `rows=1`;
+  - `topicLinks=0`;
+  - parsed candidates = 0;
+- therefore authentication/Cloudflare recovery succeeds and the failure occurs
+  before parsing/detail verification: RuTracker itself returns an empty-result
+  tracker table.
+
+Re-check against current maintained integrations:
+- the maintained qBittorrent RuTracker plugin performs search as
+  `tracker.php?nm=<query>` and does not submit the old full tracker-form flag
+  set;
+- current Prowlarr likewise sends `nm=<query>` plus an optional explicit forum
+  category list, not the fork's legacy `f[]=-1` / `prev_*` / `df/da/ds` /
+  `tm/sns/srg` bundle;
+- the fork's old URL builder was therefore over-specifying stale form state.
+  On the user's live authenticated tracker page it yielded a valid table shell
+  with one placeholder row and zero torrent links even for common titles.
+
+Commits in this stage:
+- `279f3a6797f210cd7b31ffb7b4be1c473325e93b`
+  `fix: use current minimal RuTracker search query`
+- `a20056dbcc17b854c8d8dda6019d62ae0966e2bb`
+  `test: lock RuTracker search to current nm-only request`
+
+Implemented:
+- RuTracker search URL is now intentionally minimal:
+  `/forum/tracker.php?nm=<query>`;
+- removed all legacy search-form flags from the request path;
+- source category extraction remains row-based;
+- typed filtering remains client-side;
+- visible result sorting remains local in SearchResultModel, so removing server
+  sort flags does not remove the user's Name/Size/S/L/Date sorting;
+- exact topic URL -> exact magnet/info-hash -> release description verification
+  remains unchanged.
+
+Regression test:
+- asserts `nm` is the only query item;
+- explicitly rejects accidental reintroduction of `f[]`, `prev_df`, `o`,
+  and `s`.
+
+Handoff:
+- branch: `stage32-rutracker-current-query`;
+- parent: Stage 31 / PR #15 head
+  `83b6c99d7d7afa2206a4dcbf866becb11d1a36eb`;
+- runtime acceptance requirement: on macOS Sequoia, authenticate if needed and
+  search a common title such as `терминатор`. Expected browser diagnostics are
+  now `rows > 1` and `topicLinks > 0`, followed by parsed candidates > 0 and
+  at least one RT result after exact detail verification.
+
