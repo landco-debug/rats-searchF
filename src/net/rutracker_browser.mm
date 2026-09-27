@@ -9,9 +9,15 @@
 
 namespace rats::net {
 namespace {
+enum class BrowserPurpose {
+    Fetch,
+    Authorize
+};
+
 struct Pending {
     QUrl target;
     RuTrackerBrowser::Completion callback;
+    BrowserPurpose purpose = BrowserPurpose::Fetch;
     unsigned long serial = 0;
 };
 }
@@ -21,6 +27,8 @@ struct Pending {
 @property (nonatomic, strong) NSWindow* window;
 @property (nonatomic, strong) WKWebView* web;
 - (void)get:(const QUrl&)url completion:(rats::net::RuTrackerBrowser::Completion)completion;
+- (void)authorize:(const QUrl&)url completion:(rats::net::RuTrackerBrowser::Completion)completion;
+- (void)clearSession:(std::function<void()>)completion;
 - (void)cancel;
 @end
 
@@ -36,13 +44,13 @@ struct Pending {
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                        NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
             backing:NSBackingStoreBuffered defer:NO];
-        // The same window is reused for many searches. AppKit's default
-        // releasedWhenClosed would leave our retained _window pointer stale
-        // after the user presses the red close button.
         _window.releasedWhenClosed = NO;
-        _window.title = @"RuTracker — войдите на сайт";
+        _window.title = @"RuTracker — авторизация";
         _window.delegate = self;
+
         WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+        // This is deliberately persistent. Replacing Rats Search.app must not
+        // destroy a successful RuTracker/Cloudflare browser session.
         config.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
         _web = [[WKWebView alloc] initWithFrame:frame configuration:config];
         _web.navigationDelegate = self;
@@ -57,6 +65,7 @@ struct Pending {
     auto callback = std::move(_pending->callback);
     _pending.reset();
     if (!callback) return;
+
     QByteArray body = html ? QByteArray([html UTF8String]) : QByteArray();
     QUrl finalUrl = url ? QUrl(QString::fromUtf8(url.absoluteString.UTF8String)) : QUrl();
     callback(body, finalUrl, error ? QString::fromUtf8(error.UTF8String) : QString());
@@ -69,35 +78,90 @@ struct Pending {
     [_window orderOut:nil];
 }
 
-- (void)get:(const QUrl&)url completion:(rats::net::RuTrackerBrowser::Completion)completion {
+- (void)start:(const QUrl&)url
+      purpose:(rats::net::BrowserPurpose)purpose
+   completion:(rats::net::RuTrackerBrowser::Completion)completion {
     [self cancel];
+
     _pending = std::make_unique<rats::net::Pending>();
     _pending->target = url;
     _pending->callback = std::move(completion);
+    _pending->purpose = purpose;
     _pending->serial = _serial;
-    // WebKit's persistent store survives application replacement. Never copy
-    // clearance into QNetworkCookieJar: its TLS/browser fingerprint differs.
+
     NSURL* nsurl = [NSURL URLWithString:
         QString::fromLatin1(url.toEncoded(QUrl::FullyEncoded)).toNSString()];
     if (!nsurl) {
         [self finishWithHtml:nil url:nil error:@"Invalid RuTracker URL"];
         return;
     }
+
+    if (purpose == rats::net::BrowserPurpose::Authorize) {
+        _window.title = @"RuTracker — авторизация";
+        [_window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    }
+
     [_web loadRequest:[NSURLRequest requestWithURL:nsurl]];
+
     unsigned long serial = _serial;
     __weak RatsRuTrackerWebBridge* weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 180 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 180 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
         RatsRuTrackerWebBridge* strongSelf = weakSelf;
-        if (strongSelf && strongSelf->_pending && strongSelf->_serial == serial)
-            [strongSelf finishWithHtml:nil url:strongSelf.web.URL
-                error:@"RuTracker browser login timed out (3 minutes)"];
+        if (!strongSelf || !strongSelf->_pending || strongSelf->_serial != serial)
+            return;
+        NSString* message = strongSelf->_pending->purpose == rats::net::BrowserPurpose::Authorize
+            ? @"RuTracker browser authorization timed out (3 minutes)"
+            : @"RuTracker browser request timed out (3 minutes)";
+        [strongSelf finishWithHtml:nil url:strongSelf.web.URL error:message];
     });
+}
+
+- (void)get:(const QUrl&)url completion:(rats::net::RuTrackerBrowser::Completion)completion {
+    [self start:url purpose:rats::net::BrowserPurpose::Fetch completion:std::move(completion)];
+}
+
+- (void)authorize:(const QUrl&)url completion:(rats::net::RuTrackerBrowser::Completion)completion {
+    [self start:url purpose:rats::net::BrowserPurpose::Authorize completion:std::move(completion)];
+}
+
+- (void)clearSession:(std::function<void()>)completion {
+    [self cancel];
+
+    auto callback = std::make_shared<std::function<void()>>(std::move(completion));
+    WKWebsiteDataStore* store = _web.configuration.websiteDataStore;
+    NSSet<NSString*>* types = [WKWebsiteDataStore allWebsiteDataTypes];
+
+    [store fetchDataRecordsOfTypes:types
+        completionHandler:^(NSArray<WKWebsiteDataRecord*>* records) {
+            NSMutableArray<WKWebsiteDataRecord*>* matching = [NSMutableArray array];
+            for (WKWebsiteDataRecord* record in records) {
+                NSString* name = record.displayName.lowercaseString;
+                if ([name containsString:@"rutracker"])
+                    [matching addObject:record];
+            }
+
+            if (matching.count == 0) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (*callback) (*callback)();
+                });
+                return;
+            }
+
+            [store removeDataOfTypes:types forDataRecords:matching
+                completionHandler:^{
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (*callback) (*callback)();
+                    });
+                }];
+        }];
 }
 
 - (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation {
     if (!_pending) return;
     const unsigned long serial = _serial;
-    // DOM serialization is UTF-8 even when RuTracker's source is Windows-1251.
+
     [webView evaluateJavaScript:@"(() => {"
         "const table = document.querySelector('table#tor-tbl');"
         "const links = table ? Array.from(table.querySelectorAll('a.tLink')) : [];"
@@ -106,6 +170,7 @@ struct Pending {
         " links: links.length,"
         " ids: links.slice(0,3).map(a => (a.closest('tr')?.id || '') + '/' + (a.getAttribute('data-topic_id') || '')).join(', '),"
         " loggedIn: !!document.getElementById('logged-in-username'),"
+        " loginForm: !!document.querySelector('input[name=\"login_password\"]'),"
         " magnet: !!document.querySelector('a[href*=\"xt=urn:btih:\"]')};"
         "})()"
         completionHandler:^(id value, NSError* error) {
@@ -116,9 +181,29 @@ struct Pending {
                     error:error.localizedDescription ?: @"Cannot inspect RuTracker browser page"];
                 return;
             }
+
             NSDictionary* snapshot = value;
             NSString* html = snapshot[@"html"] ?: @"";
             NSString* path = webView.URL.path ?: @"";
+            const bool loggedIn = [snapshot[@"loggedIn"] boolValue];
+
+            if (self->_pending->purpose == rats::net::BrowserPurpose::Authorize) {
+                if (loggedIn) {
+                    qInfo() << "[RuTrackerBrowser] browser authorization confirmed"
+                            << QString::fromNSString(webView.URL.host ?: @"");
+                    [self.window orderOut:nil];
+                    [self finishWithHtml:html url:webView.URL error:nil];
+                    return;
+                }
+
+                // Login/Cloudflare/captcha stays visible and interactive. WebKit
+                // keeps handling every redirect until the logged-in marker
+                // appears in this same browser session.
+                [self.window makeKeyAndOrderFront:nil];
+                [NSApp activateIgnoringOtherApps:YES];
+                return;
+            }
+
             const bool search = self->_pending->target.path().endsWith("tracker.php");
             if (search) {
                 qInfo() << "[RuTrackerBrowser] search DOM"
@@ -128,6 +213,7 @@ struct Pending {
                         << "topicLinks" << [snapshot[@"links"] intValue]
                         << "row/topic IDs" << QString::fromNSString(snapshot[@"ids"]);
             }
+
             const bool ready = search
                 ? ([path hasSuffix:@"/tracker.php"] && [snapshot[@"table"] boolValue])
                 : ([path containsString:@"viewtopic.php"]
@@ -137,24 +223,26 @@ struct Pending {
                 [self finishWithHtml:html url:webView.URL error:nil];
                 return;
             }
-            const bool loggedIn = [snapshot[@"loggedIn"] boolValue];
-            const bool onTarget = [webView.URL.host isEqualToString:self->_pending->target.host().toNSString()]
+
+            const bool onTarget =
+                [webView.URL.host isEqualToString:self->_pending->target.host().toNSString()]
                 && [path isEqualToString:self->_pending->target.path().toNSString()];
+
             if (loggedIn && !onTarget) {
                 NSURL* destination = [NSURL URLWithString:
                     QString::fromLatin1(self->_pending->target.toEncoded(QUrl::FullyEncoded)).toNSString()];
                 [webView loadRequest:[NSURLRequest requestWithURL:destination]];
                 return;
             }
+
             const bool interactive =
-                [html rangeOfString:@"login_password" options:NSCaseInsensitiveSearch].location != NSNotFound
+                [snapshot[@"loginForm"] boolValue]
                 || [html rangeOfString:@"cf-chl-" options:NSCaseInsensitiveSearch].location != NSNotFound
                 || [html rangeOfString:@"challenge-platform" options:NSCaseInsensitiveSearch].location != NSNotFound
                 || [html rangeOfString:@"captcha" options:NSCaseInsensitiveSearch].location != NSNotFound
                 || [html rangeOfString:@"Just a moment" options:NSCaseInsensitiveSearch].location != NSNotFound;
+
             if (!interactive) {
-                // A completed blank/unexpected page cannot become a torrent
-                // listing by waiting. Give a provider error, not a white UI.
                 [self.window orderOut:nil];
                 NSString* problem = [NSString stringWithFormat:
                     @"RuTracker returned an empty or unexpected browser page (%@)",
@@ -162,45 +250,66 @@ struct Pending {
                 [self finishWithHtml:nil url:webView.URL error:problem];
                 return;
             }
-            // A real login/captcha/Cloudflare page remains interactive.
+
+            // Search requests that encounter authentication or Cloudflare are
+            // resolved by the user in the same persistent WebKit session.
             [self.window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:YES];
-            (void)error;
         }];
 }
 
 - (void)webView:(WKWebView*)webView didFailNavigation:(WKNavigation*)navigation withError:(NSError*)error {
     if (_pending) [self finishWithHtml:nil url:webView.URL error:error.localizedDescription];
 }
+
 - (void)webView:(WKWebView*)webView didFailProvisionalNavigation:(WKNavigation*)navigation withError:(NSError*)error {
     if (_pending && error.code != NSURLErrorCancelled)
         [self finishWithHtml:nil url:webView.URL error:error.localizedDescription];
 }
+
 - (BOOL)windowShouldClose:(NSWindow*)sender {
-    // Keep the reusable window and WKWebView alive. Closing the native window
-    // while a later search still owns this bridge caused a stale window call.
     [sender orderOut:nil];
     if (_pending)
-        [self finishWithHtml:nil url:_web.URL error:@"RuTracker browser login was cancelled"];
+        [self finishWithHtml:nil url:_web.URL error:@"RuTracker browser authorization was cancelled"];
     return NO;
 }
 @end
 
 namespace rats::net {
+
 RuTrackerBrowser::RuTrackerBrowser()
-    : bridge_((__bridge_retained void*)[[RatsRuTrackerWebBridge alloc] init]) {}
-RuTrackerBrowser::~RuTrackerBrowser() {
+    : bridge_((__bridge_retained void*)[[RatsRuTrackerWebBridge alloc] init])
+{
+}
+
+RuTrackerBrowser::~RuTrackerBrowser()
+{
     auto* bridge = (__bridge_transfer RatsRuTrackerWebBridge*)bridge_;
     [bridge cancel];
     bridge.web.navigationDelegate = nil;
     bridge.window.delegate = nil;
     [bridge.window close];
 }
-void RuTrackerBrowser::get(const QUrl& url, Completion completion) {
+
+void RuTrackerBrowser::get(const QUrl& url, Completion completion)
+{
     [(__bridge RatsRuTrackerWebBridge*)bridge_ get:url completion:std::move(completion)];
 }
-void RuTrackerBrowser::cancel() {
+
+void RuTrackerBrowser::authorize(const QUrl& loginUrl, Completion completion)
+{
+    [(__bridge RatsRuTrackerWebBridge*)bridge_ authorize:loginUrl completion:std::move(completion)];
+}
+
+void RuTrackerBrowser::clearSession(std::function<void()> completion)
+{
+    [(__bridge RatsRuTrackerWebBridge*)bridge_ clearSession:std::move(completion)];
+}
+
+void RuTrackerBrowser::cancel()
+{
     [(__bridge RatsRuTrackerWebBridge*)bridge_ cancel];
 }
-}
+
+} // namespace rats::net
 #endif
