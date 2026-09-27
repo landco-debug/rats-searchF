@@ -20,16 +20,43 @@ QNetworkRequest requestFor(const QUrl& url, bool torrent = false)
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader,
         QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 RatsSearch/2"));
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/154.0.0.0 Safari/537.36"));
     request.setRawHeader("Accept", torrent
         ? "application/x-bittorrent,application/octet-stream,*/*;q=0.5"
         : "text/html,application/xhtml+xml");
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
+    request.setRawHeader("DNT", "1");
+    request.setRawHeader("Pragma", "no-cache");
+    request.setRawHeader("Cache-Control", "no-cache");
+    request.setRawHeader("Upgrade-Insecure-Requests", "1");
+    if (!torrent) {
+        request.setRawHeader("Sec-Fetch-Dest", "document");
+        request.setRawHeader("Sec-Fetch-Mode", "navigate");
+        request.setRawHeader("Sec-Fetch-Site", "same-origin");
+        request.setRawHeader("Sec-Fetch-User", "?1");
+    }
     request.setRawHeader("Referer", "https://megapeer.vip/browse.php");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
         QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(15000);
     return request;
+}
+
+bool looksLikeAntiBotPage(const QByteArray& body)
+{
+    return body.contains("cf-chl-")
+        || body.contains("/cdn-cgi/challenge-platform")
+        || body.contains("challenge-form")
+        || body.contains("Just a moment")
+        || body.contains("Attention Required");
+}
+
+bool looksLikeValidBrowsePage(const QByteArray& body)
+{
+    const QString html = sourceparse::decodeTrackerText(body);
+    return html.contains(QStringLiteral(R"(id="logo")"), Qt::CaseInsensitive)
+        || html.contains(QStringLiteral(R"(id='logo')"), Qt::CaseInsensitive);
 }
 
 } // namespace
@@ -114,6 +141,17 @@ void MegaPeerSearchClient::fetchSearchPage(int generation)
                 return;
             }
 
+            if (looksLikeAntiBotPage(body)) {
+                finishNow(generation,
+                    tr("MegaPeer blocked this direct request with an anti-bot/Cloudflare page."));
+                return;
+            }
+            if (!looksLikeValidBrowsePage(body)) {
+                finishNow(generation,
+                    tr("MegaPeer returned a non-listing page. The site may be rate-limiting or proxying this client."));
+                return;
+            }
+
             QVector<domain::Torrent> candidates
                 = MegaPeerSource::parseSearchPage(body, finalUrl,
                     qMin(120, qMax(requestedLimit_, requestedLimit_ * 3)));
@@ -186,6 +224,15 @@ void MegaPeerSearchClient::fetchDetail(Job job, int generation)
                 return;
             }
 
+            if (looksLikeAntiBotPage(body)) {
+                recordNetworkFailure(QStringLiteral("detail"),
+                    QStringLiteral("anti-bot/Cloudflare page"));
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+
             job.detailBody = body;
             job.detailFinalUrl = finalUrl;
 
@@ -220,6 +267,15 @@ void MegaPeerSearchClient::fetchTorrentFallback(Job job, int generation)
 
             if (error != QNetworkReply::NoError) {
                 recordNetworkFailure(QStringLiteral("torrent fallback"), errorText);
+                ++rejected_;
+                --active_;
+                processQueue(generation);
+                return;
+            }
+
+            if (looksLikeAntiBotPage(body)) {
+                recordNetworkFailure(QStringLiteral("torrent fallback"),
+                    QStringLiteral("anti-bot/Cloudflare page"));
                 ++rejected_;
                 --active_;
                 processQueue(generation);
