@@ -20,6 +20,7 @@ private slots:
     void sparseExactReleaseIsNotHiddenByFieldParsing();
     void wrongTopicPageIsRejected();
     void rowNumberIsNotTopicIdentity();
+    void exactTopicUrlAcceptsCurrentMirrors();
 };
 
 static const QString kHash
@@ -51,6 +52,29 @@ void TestRuTrackerRuSource::rowNumberIsNotTopicIdentity()
     QCOMPARE(rows.at(1).info.value(QStringLiteral("sourceTopicId")).toInt(), 42);
     QVERIFY(rows.at(0).hash.isEmpty());
     QVERIFY(!rows.at(0).info.value(QStringLiteral("sourceVerified")).toBool());
+}
+
+
+void TestRuTrackerRuSource::exactTopicUrlAcceptsCurrentMirrors()
+{
+    for (const QString& host : {
+             QStringLiteral("rutracker.net"),
+             QStringLiteral("rutracker.org"),
+             QStringLiteral("rutracker.nl"),
+             QStringLiteral("rutracker.ru") }) {
+        const QUrl url(QStringLiteral("https://%1/forum/viewtopic.php?t=777").arg(host));
+        QVERIFY2(RuTrackerRuSource::isExactTopicUrl(url, 777),
+            qPrintable(QStringLiteral("expected current/legacy RuTracker host: %1").arg(host)));
+    }
+
+    QVERIFY(!RuTrackerRuSource::isExactTopicUrl(
+        QUrl(QStringLiteral("https://rutracker.net/forum/viewtopic.php?t=778")), 777));
+    QVERIFY(!RuTrackerRuSource::isExactTopicUrl(
+        QUrl(QStringLiteral("https://evil.example/forum/viewtopic.php?t=777")), 777));
+    QVERIFY(!RuTrackerRuSource::isExactTopicUrl(
+        QUrl(QStringLiteral("https://rutracker.net/forum/tracker.php?t=777")), 777));
+    QVERIFY(!RuTrackerRuSource::isExactTopicUrl(
+        QUrl(QStringLiteral("https://rutracker.net/forum/viewtopic.php")), 777));
 }
 
 void TestRuTrackerRuSource::buildsAuthenticatedForumSearchUrl()

@@ -7,6 +7,7 @@
 #include "domain/content.h"
 #include "domain/torrent_codec.h"
 #include "net/torrent_engine.h"
+#include "net/rutracker_ru_source.h"
 #include "peer/peer_api.h"
 #include "services/download_service.h"
 #include "services/tracker_service.h"
@@ -59,9 +60,10 @@ QUrl verifiedExactSourceUrl(const QJsonObject& info)
     }
 
     if (provider == QStringLiteral("rutracker-ru")) {
-        if (url.host().compare(
-                QStringLiteral("rutracker.ru"), Qt::CaseInsensitive) != 0
-            || !url.path().endsWith(QStringLiteral("/viewtopic.php"))) {
+        const int expectedTopicId
+            = info.value(QStringLiteral("sourceTopicId")).toInt();
+        if (!rats::net::RuTrackerRuSource::isExactTopicUrl(
+                url, expectedTopicId)) {
             return {};
         }
         return url;
@@ -96,7 +98,7 @@ QString exactSourceDisplayName(const QJsonObject& info)
     if (provider == QStringLiteral("rutor"))
         return QStringLiteral("Rutor");
     if (provider == QStringLiteral("rutracker-ru"))
-        return QStringLiteral("RuTracker.RU");
+        return QStringLiteral("RuTracker");
     if (provider == QStringLiteral("megapeer"))
         return QStringLiteral("MegaPeer");
     if (provider == QStringLiteral("nnmclub"))

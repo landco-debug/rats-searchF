@@ -32,6 +32,10 @@ public:
         const QByteArray& rawData,
         const QUrl& finalUrl);
 
+    // Validate a concrete RuTracker topic URL against current official mirrors.
+    // When expectedTopicId > 0 the URL's ?t= id must match exactly.
+    static bool isExactTopicUrl(const QUrl& url, int expectedTopicId = 0);
+
     static bool isStrictComplete(const domain::Torrent& torrent);
 
 private:

@@ -151,7 +151,10 @@ bool isRuTrackerHost(QString host)
         host.remove(0, 4);
     return host == QStringLiteral("rutracker.org")
         || host == QStringLiteral("rutracker.net")
-        || host == QStringLiteral("rutracker.nl");
+        || host == QStringLiteral("rutracker.nl")
+        // Legacy exact-source snapshots from earlier builds may still carry
+        // rutracker.ru. Accept them for opening/verifying the concrete topic.
+        || host == QStringLiteral("rutracker.ru");
 }
 
 int topicIdFromUrl(const QUrl& url)
@@ -230,6 +233,15 @@ int RuTrackerRuSource::sortColumn(const QString& sortKey)
 int RuTrackerRuSource::sortDirection(const QString& sortKey)
 {
     return sortKey.endsWith(QStringLiteral("_asc")) ? 1 : 2;
+}
+
+bool RuTrackerRuSource::isExactTopicUrl(
+    const QUrl& url, int expectedTopicId)
+{
+    const int topicId = topicIdFromUrl(url);
+    if (topicId <= 0)
+        return false;
+    return expectedTopicId <= 0 || topicId == expectedTopicId;
 }
 
 QUrl RuTrackerRuSource::searchUrl(

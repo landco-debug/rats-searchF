@@ -1329,3 +1329,49 @@ Handoff:
 - runtime acceptance: RuTracker remains visible after browser auth and every RT
   row shows the full release title instead of the first styled word.
 
+### Stage 35 — restore exact RuTracker release button for current mirrors
+
+Runtime finding:
+- Stage 34 shows verified RT rows correctly, but the details panel does not show
+  the same `Open exact <source> release` button that Rutor rows have;
+- the RuTracker result itself already contains an exact verified `sourceUrl`
+  and `sourceTopicId`;
+- the button was hidden by a stale UI-only validator that accepted only the host
+  `rutracker.ru`;
+- the current macOS browser-only integration actually stores exact topic URLs on
+  the active official mirrors `rutracker.net`, `rutracker.org` or
+  `rutracker.nl`, so `verifiedExactSourceUrl()` returned invalid and the UI
+  incorrectly treated an exact RT result as non-exact.
+
+Commit:
+- this Stage 35 commit atomically updates source validation, UI, regression tests
+  and this handoff section.
+
+Implemented:
+- added `RuTrackerRuSource::isExactTopicUrl()` as the single validator for a
+  concrete RuTracker topic URL;
+- accepts current official mirrors `.net`, `.org`, `.nl` and legacy
+  `.ru` snapshots for backward compatibility;
+- requires the exact `/forum/viewtopic.php?t=<id>` shape;
+- when `sourceTopicId` is available, the URL's topic ID must match it exactly;
+- the details panel now uses that canonical validator instead of its obsolete
+  `rutracker.ru`-only check;
+- verified RT rows therefore render the same exact-source section and button as
+  Rutor/MegaPeer/NNM-Club;
+- button text is `Open exact RuTracker release` and opens the concrete
+  `sourceUrl`, never a title search or generic tracker page;
+- no search/auth/parser logic changed.
+
+Regression coverage:
+- verifies exact topic URLs for rutracker.net / .org / .nl and legacy .ru;
+- rejects wrong topic IDs, unrelated hosts, tracker.php and URLs without a
+  concrete topic id.
+
+Handoff:
+- branch: `stage35-rutracker-exact-release-link`;
+- parent: Stage 34 head
+  `c8068a491304ab28110d9754bdfcbeaa18db97e2`;
+- runtime acceptance: select an RT row and confirm the details panel shows
+  `Open exact RuTracker release`; clicking it must open that row's exact
+  viewtopic.php?t=<sourceTopicId> page.
+
