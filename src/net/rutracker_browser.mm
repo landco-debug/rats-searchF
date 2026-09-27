@@ -35,6 +35,10 @@ struct Pending {
             styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                        NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
             backing:NSBackingStoreBuffered defer:NO];
+        // The same window is reused for many searches. AppKit's default
+        // releasedWhenClosed would leave our retained _window pointer stale
+        // after the user presses the red close button.
+        _window.releasedWhenClosed = NO;
         _window.title = @"RuTracker — войдите на сайт";
         _window.delegate = self;
         WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
@@ -72,7 +76,8 @@ struct Pending {
     _pending->serial = _serial;
     // WebKit's persistent store survives application replacement. Never copy
     // clearance into QNetworkCookieJar: its TLS/browser fingerprint differs.
-    NSURL* nsurl = [NSURL URLWithString:url.toString().toNSString()];
+    NSURL* nsurl = [NSURL URLWithString:
+        QString::fromLatin1(url.toEncoded(QUrl::FullyEncoded)).toNSString()];
     if (!nsurl) {
         [self finishWithHtml:nil url:nil error:@"Invalid RuTracker URL"];
         return;
@@ -111,11 +116,28 @@ struct Pending {
             const bool onTarget = [webView.URL.host isEqualToString:self->_pending->target.host().toNSString()]
                 && [path isEqualToString:self->_pending->target.path().toNSString()];
             if (loggedIn && !onTarget) {
-                NSURL* destination = [NSURL URLWithString:self->_pending->target.toString().toNSString()];
+                NSURL* destination = [NSURL URLWithString:
+                    QString::fromLatin1(self->_pending->target.toEncoded(QUrl::FullyEncoded)).toNSString()];
                 [webView loadRequest:[NSURLRequest requestWithURL:destination]];
                 return;
             }
-            // A real login/captcha/Cloudflare page must remain interactive.
+            const bool interactive =
+                [html rangeOfString:@"login_password" options:NSCaseInsensitiveSearch].location != NSNotFound
+                || [html rangeOfString:@"cf-chl-" options:NSCaseInsensitiveSearch].location != NSNotFound
+                || [html rangeOfString:@"challenge-platform" options:NSCaseInsensitiveSearch].location != NSNotFound
+                || [html rangeOfString:@"captcha" options:NSCaseInsensitiveSearch].location != NSNotFound
+                || [html rangeOfString:@"Just a moment" options:NSCaseInsensitiveSearch].location != NSNotFound;
+            if (!interactive) {
+                // A completed blank/unexpected page cannot become a torrent
+                // listing by waiting. Give a provider error, not a white UI.
+                [self.window orderOut:nil];
+                NSString* problem = [NSString stringWithFormat:
+                    @"RuTracker returned an empty or unexpected browser page (%@)",
+                    webView.URL.absoluteString ?: @"unknown URL"];
+                [self finishWithHtml:nil url:webView.URL error:problem];
+                return;
+            }
+            // A real login/captcha/Cloudflare page remains interactive.
             [self.window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:YES];
             (void)error;
@@ -129,8 +151,13 @@ struct Pending {
     if (_pending && error.code != NSURLErrorCancelled)
         [self finishWithHtml:nil url:webView.URL error:error.localizedDescription];
 }
-- (void)windowWillClose:(NSNotification*)notification {
-    if (_pending) [self finishWithHtml:nil url:_web.URL error:@"RuTracker browser login was cancelled"];
+- (BOOL)windowShouldClose:(NSWindow*)sender {
+    // Keep the reusable window and WKWebView alive. Closing the native window
+    // while a later search still owns this bridge caused a stale window call.
+    [sender orderOut:nil];
+    if (_pending)
+        [self finishWithHtml:nil url:_web.URL error:@"RuTracker browser login was cancelled"];
+    return NO;
 }
 @end
 

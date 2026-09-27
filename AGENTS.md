@@ -1049,3 +1049,26 @@ Stage 30 CI/package follow-up (commit message:
   same signed app with macOS `ditto` and upload ZIP instead of losing a
   successfully built test binary;
 - the fallback changes packaging only, not RuTracker behavior or source logic.
+
+Stage 30 runtime hotfix (commit message:
+`fix: retain RuTracker browser window and report blank pages`):
+- user signed in through the Stage 30 browser window, then saw a completely
+  white window with no RuTracker results; after closing it and starting another
+  search, Rats Search crashed;
+- supplied macOS crash report: `EXC_BAD_ACCESS` on main thread, `objc_msgSend`
+  from `RuTrackerRuSearchClient::cancel()` during a subsequent `search()`;
+  the Objective-C selector at the crash was `orderOut:`, so the reusable native
+  window had become unsafe after close;
+- the native NSWindow is now explicitly retained after close, and its red close
+  button hides/cancels the pending browser login without destroying the reusable
+  window or WebKit view;
+- browser URLs now use Qt's fully encoded bytes when handed to NSURL, preserving
+  query escapes across the Qt-to-WebKit boundary;
+- if WebKit completes a page that is neither the requested real torrent page nor
+  an interactive login/challenge page, hide the window and report the final URL
+  as an explicit provider error instead of leaving a featureless white window;
+- preserve the signed app's settings and persistent WebKit data store on upgrade.
+
+Runtime acceptance still required on macOS: sign in if asked, search for a known
+RuTracker release, confirm an `RT` result; run a second search after closing
+an unsuccessful browser window; quit/relaunch and search again. Keep PR draft.
