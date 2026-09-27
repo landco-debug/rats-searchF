@@ -62,7 +62,14 @@ void TestRuTrackerRuSource::buildsAuthenticatedForumSearchUrl()
 
     QUrlQuery query(url);
     QCOMPARE(query.queryItemValue(QStringLiteral("nm")), QStringLiteral("Under Siege"));
-    QCOMPARE(query.queryItemValue(QStringLiteral("f[]")), QStringLiteral("-1"));
+
+    const auto items = query.queryItems();
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().first, QStringLiteral("nm"));
+    QVERIFY(!query.hasQueryItem(QStringLiteral("f[]")));
+    QVERIFY(!query.hasQueryItem(QStringLiteral("prev_df")));
+    QVERIFY(!query.hasQueryItem(QStringLiteral("o")));
+    QVERIFY(!query.hasQueryItem(QStringLiteral("s")));
 }
 
 void TestRuTrackerRuSource::parsesCurrentExactSearchRowWithoutPretendingHashIsPublic()
