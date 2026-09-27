@@ -741,3 +741,66 @@ Next stage:
 - redesign MegaPeer to the verified detail-page-first flow: exact page -> magnet
   info-hash -> .torrent only as a fallback, with lower request pressure and
   visible network/provider failures.
+
+### Stage 26 — MegaPeer detail-first verification and lower request pressure
+
+Re-check before implementation:
+- current Jackett/Prowlarr-style MegaPeer definitions still treat the tracker as
+  public and use the listing's concrete /torrent/<id> and /download/<id> links;
+- current independent MegaPeer clients resolve the magnet from the exact detail
+  page, so downloading a .torrent before opening that page is unnecessary on
+  the normal path;
+- broad crawler implementations pace MegaPeer very aggressively because they
+  sweep whole categories. An interactive one-query search should not inherit
+  30/60/90-second crawler sleeps, but it also should not fan out four
+  detail/.torrent pairs at once;
+- therefore the correct interactive flow is: listing -> exact detail page ->
+  magnet/info-hash; use the paired .torrent only if that exact page does not
+  expose a magnet.
+
+Commits in this stage:
+- `4670b50ebd94f37fa08f4ff4190b77ae99686efe`
+  `fix: prefer MegaPeer detail magnet over torrent download`
+- `3c214be14628520247326bb786f5c42aadd5b4d9`
+  `docs: describe MegaPeer detail-first identity flow`
+- `73b2c65df48ad42f7880a3bcecb0c0aa9c5577f4`
+  `refactor: make MegaPeer verification detail-first`
+- `6437c14abdd16c386e0dd48526d6773556d588f7`
+  `fix: reduce MegaPeer request pressure and surface failures`
+- `25111bed00779fff50c662220d4f833c66a71071`
+  `test: cover MegaPeer detail-first identity and fallback`
+
+Implemented:
+- MegaPeer now fetches the exact detail page first;
+- a magnet on that page supplies the info-hash directly and becomes the primary
+  identity proof;
+- the search-row topic id and paired download id still have to match the exact
+  detail page before its metadata is trusted;
+- the .torrent download is retained strictly as a fallback when the verified
+  detail page has no magnet;
+- the already-fetched detail body is reused after the fallback .torrent is
+  parsed, avoiding a second detail-page request;
+- normal successful candidates therefore use one post-listing request instead
+  of two;
+- per-source detail concurrency is reduced from 4 to 2;
+- provider/network failures are counted and, if MegaPeer produces no verified
+  result, surfaced through the existing source-status path instead of silently
+  looking like an empty tracker;
+- typed category hints remain prioritization-only and final admission still
+  depends on exact-source verification.
+
+Validation added:
+- detail-page magnet can create the hash from an initially hash-less search row;
+- a paired .torrent hash remains accepted as the fallback when the exact page
+  has no magnet;
+- a wrong download id is rejected even when a plausible magnet is present;
+- a magnet that conflicts with a pre-resolved fallback hash is rejected.
+
+Handoff note:
+- Stage 25 RuTracker authentication is inherited from commit
+  `757bfa254a597b31c0537e676395fcee3956cbd5`;
+- Stage 26 is on branch `stage26-megapeer-gentle`;
+- before presenting a user build, run the full GitHub Actions test/build matrix
+  and only use the macOS ARM artifact whose BUILD-REVISION.txt matches the branch
+  head.
+
