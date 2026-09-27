@@ -810,3 +810,105 @@ Handoff note:
   and only use the macOS ARM artifact whose BUILD-REVISION.txt matches the branch
   head.
 
+### Stage 27 — live RuTracker mirrors and Cloudflare-aware tracker transport
+
+Why Stage 26 still showed only Rutor + NNM-Club:
+- runtime testing on macOS showed no RT/M rows even though the Stage 25/26
+  parsers and credentials UI were active;
+- the user's working browser session is currently on
+  `https://rutracker.net/forum/index.php`, while Stage 25 hard-coded
+  `rutracker.org`;
+- re-checking the current qBittorrent RuTracker plugin confirms that the live
+  login/search endpoints are still `/forum/login.php` and
+  `/forum/tracker.php`, but `.org` and `.net` are both official mirrors
+  and the current submit value is Windows-1251 `login=Вход`;
+- recent RuTracker integrations/issues also show `.org` returning HTTP 403 /
+  a Cloudflare managed challenge on login for some clients/regions;
+- current Jackett MegaPeer still uses `https://megapeer.vip/browse.php`,
+  Windows-1251, `tr.table_fon`, `/torrent/` detail links and
+  `/download/` torrent links, so the Stage 26 endpoint/parser was not the
+  remaining fault;
+- current Jackett/jacred-style MegaPeer configurations explicitly use a
+  FlareSolverr/browser path, confirming that plain HTTP can be challenged by
+  Cloudflare even when the same site works in a real browser.
+
+Design choice:
+- keep normal QNetworkAccessManager requests as the fast path;
+- only after detecting an actual Cloudflare challenge on macOS, create a short-
+  lived off-screen WKWebView using the system WebKit framework;
+- let WebKit complete the managed challenge, then copy its cookies and exact
+  navigator User-Agent into the existing QNetworkAccessManager session;
+- destroy the WKWebView immediately after the hand-off. There is no permanent
+  helper/browser process and no Homebrew/external runtime dependency.
+
+RuTracker transport changes:
+- official mirror order is now `rutracker.net` -> `rutracker.org` ->
+  `rutracker.nl`;
+- each mirror uses its own `/forum/login.php`, `/forum/tracker.php` and
+  exact topic URLs, rather than mixing cookies/URLs across hosts;
+- login POST now uses `login_username`, `login_password`,
+  Windows-1251 `login=Вход` and `redirect=index.php`;
+- 403/429/503 and HTTP-200 managed-challenge markup are recognized explicitly;
+- a challenged mirror gets one system-WebKit clearance attempt; if it still
+  fails, authentication advances to the next official mirror;
+- the successfully authenticated mirror remains the base for search and detail
+  verification;
+- the existing exact topic-id + magnet/info-hash provenance rules are unchanged.
+
+MegaPeer transport changes:
+- the Stage 26 detail-first parser/identity path is retained unchanged;
+- the initial search request now detects Cloudflare instead of treating it as a
+  normal empty/failed source;
+- on macOS, one system-WebKit clearance pass for `megapeer.vip` supplies
+  cookies + browser UA, after which the ordinary detail-first QNetworkAccessManager
+  flow is retried;
+- if protection persists, MegaPeer reports an explicit provider error instead
+  of silently looking like a tracker with zero results.
+
+New shared validation:
+- unit tests recognize both HTTP-200 managed challenge markup and 403
+  Cloudflare responses while leaving normal tracker HTML untouched;
+- RuTracker URL tests now prove the default `.net` route, requested official
+  mirror routing and safe fallback from a non-RuTracker base URL.
+
+Commits in this stage:
+- `2914fa3670ad418ccb2311e7af82940675642594`
+  `stage27: add cloudflare_clearance.h`
+- `507ca7059993ea281a9e5eacdc7e8cead2f718f3`
+  `stage27: add cloudflare_clearance.cpp`
+- `49009f065f0e84a46e211e7871393cb9b9b79088`
+  `stage27: add cloudflare_clearance_mac.mm`
+- `ecfb3801783710a6a06a29cc368209465f5ee778`
+  `stage27: add test_cloudflare_clearance.cpp`
+- `f41d12bf4a0d633908ef521ab7e135f5401012d9`
+  `stage27: wire macOS WebKit clearance into build`
+- `f40cec0d6727e8201428a7b6954a52cd9c3bab9f`
+  `stage27: add Cloudflare detector unit test`
+- `5bbb7164fd87b1658a0e016916d9eb5622a57994`
+  `stage27: add MegaPeer Cloudflare recovery`
+- `aea4a1c9263603d1938a718b46989490dfa93052`
+  `stage27: recover MegaPeer through system WebKit clearance`
+- `f8df30ae19773033a26d95d3f2a0133242d8e875`
+  `stage27: add RuTracker mirror and Cloudflare fallback`
+- `68c31f4a0293790590b192cd752539cded25c414`
+  `stage27: prefer live RuTracker mirror and recover protected sessions`
+- `f004a0d6eff98e93ffdc2c7f28b3e7141890dd50`
+  `stage27: make RuTracker search mirror-aware`
+- `a0e645c2e0db765464b3234672ca81a83298c619`
+  `stage27: route RuTracker queries through active mirror`
+- `eee4fe929d1a81bd6be200b284d29cbead5bd72a`
+  `test: cover RuTracker mirror-aware search URLs`
+- `e323734a76fd1bcb078e021569f1c3a90536ccc5`
+  `stage27: harden macOS WebKit bridge compilation`
+
+Stage 25 correction for hand-off:
+- the Stage 25 notes saying the runtime always POSTs to `rutracker.org` with
+  `login=Login` are historical. Stage 27 supersedes both details with
+  mirror-aware routing and the current `Вход` form value.
+
+Current branch:
+- `stage27-current-network-fallback`
+- run the full GitHub Actions matrix before giving the user a build;
+- for the MacBook Air M1 use only the macOS ARM artifact whose
+  BUILD-REVISION.txt exactly matches the final branch HEAD.
+
