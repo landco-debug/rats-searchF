@@ -209,39 +209,23 @@ int RuTrackerRuSource::sortDirection(const QString& sortKey)
 QUrl RuTrackerRuSource::searchUrl(
     const QString& query, const QString& sortKey, const QString& contentType)
 {
+    Q_UNUSED(sortKey);
     Q_UNUSED(contentType);
 
     QUrl url(QStringLiteral("https://rutracker.org/forum/tracker.php"));
     QUrlQuery q;
-    // Keep server-side category scope broad. RuTracker forum IDs evolve and a
-    // stale hand-maintained mapping must never make a typed search lose recall.
-    // Source category is still captured from each row and used for prioritizing
-    // and final client-side filtering.
-    q.addQueryItem(QStringLiteral("f[]"), QStringLiteral("-1"));
-    q.addQueryItem(QStringLiteral("prev_allw"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("prev_a"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_dla"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_dlc"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_dld"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_dlw"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_my"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_new"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_sd"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_da"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("prev_dc"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_df"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("prev_ds"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("prev_tor_type"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("o"), QString::number(sortColumn(sortKey)));
-    q.addQueryItem(QStringLiteral("s"), QString::number(sortDirection(sortKey)));
-    q.addQueryItem(QStringLiteral("dc"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("df"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("da"), QStringLiteral("1"));
-    q.addQueryItem(QStringLiteral("ds"), QStringLiteral("0"));
-    q.addQueryItem(QStringLiteral("tm"), QStringLiteral("-1"));
-    q.addQueryItem(QStringLiteral("sns"), QStringLiteral("-1"));
-    q.addQueryItem(QStringLiteral("srg"), QStringLiteral("-1"));
-    q.addQueryItem(QStringLiteral("allw"), QStringLiteral("0"));
+
+    // Keep the request aligned with current maintained RuTracker clients:
+    // tracker.php?nm=<query>. The previous fork sent a large set of legacy
+    // tracker-form flags (f[]=-1, prev_*, df/da/ds, tm/sns/srg, o/s). On the
+    // user's live authenticated page those flags produced a valid tor-tbl with
+    // exactly one placeholder row and zero a.tLink entries even for common
+    // queries such as "терминатор". That is a server-side empty result, before
+    // our parser ever sees a release.
+    //
+    // Do not constrain the server here. Exact source category is captured from
+    // each returned row, typed filtering stays client-side, and the visible
+    // result model applies the user's requested sort after results arrive.
     q.addQueryItem(QStringLiteral("nm"), query.trimmed());
     url.setQuery(q);
     return url;
