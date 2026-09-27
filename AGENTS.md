@@ -741,3 +741,74 @@ Next stage:
 - redesign MegaPeer to the verified detail-page-first flow: exact page -> magnet
   info-hash -> .torrent only as a fallback, with lower request pressure and
   visible network/provider failures.
+
+
+### Stage 26 — gentle MegaPeer detail-first verification
+
+Commit message: `fix: make MegaPeer verification detail-first`.
+
+Why this stage exists:
+- Run #84 exposed that MegaPeer could silently contribute zero rows while Rutor
+  and NNM-Club still worked;
+- the old client downloaded a .torrent for every candidate *before* opening the
+  exact release page, then opened the detail page as a second request;
+- MegaPeer is a public tracker but is rate-limited / sometimes browser-challenge
+  protected, so that two-request-per-candidate fan-out was unnecessarily harsh
+  for an interactive desktop search;
+- current MegaPeer integrations confirm that each listing row has a concrete
+  /torrent/<id> page and that the exact detail page normally exposes a magnet
+  and a direct torrent download link.
+
+Implemented:
+- MegaPeer search rows now require only the concrete /torrent/<id> release page;
+  a search-row direct .torrent URL is retained when present but is no longer a
+  prerequisite for putting the candidate into the exact verification queue;
+- the exact detail page is fetched first and its magnet/info-hash is the primary
+  identity proof;
+- the detail-page topic id must equal the search-row topic id, including after
+  redirects; a wrong concrete topic is rejected instead of falling back to a
+  guessed URL;
+- direct .torrent links are also learned from that exact page. Current
+  /download/<id>/... and download.php/download2.php?id=<id> shapes are accepted;
+- when the search row already supplied a download id, a conflicting download id
+  on the exact page rejects the candidate;
+- a .torrent request is made only when the exact page has no usable magnet or
+  when exact file metadata is genuinely needed to classify an otherwise unknown
+  content type;
+- fallback .torrent metadata must have the same hash if a detail magnet already
+  established one; otherwise its computed hash becomes the identity only because
+  the .torrent URL is paired with the already verified exact topic page;
+- detail concurrency is reduced from 4 to 2 and the candidate cap is reduced
+  from 120 to 80, cutting burst pressure while keeping interactive results
+  streaming;
+- HTTP/network failures and Cloudflare/browser challenge pages are tracked
+  separately from ordinary strict-completeness rejections;
+- partial MegaPeer failures are now surfaced in the final source status even if
+  some MegaPeer results succeeded; the combined status says `source issues`
+  rather than falsely calling a partly working provider completely unavailable;
+- generic selected-torrent file resolution still hash-verifies any MegaPeer
+  source .torrent before showing its file tree.
+
+Validation added:
+- a search row with only a concrete detail page remains eligible;
+- search-row direct-download provenance is still retained when available;
+- a detail-page magnet completes exact identity without any .torrent request;
+- a magnet-less exact page keeps its own direct .torrent fallback URL but remains
+  unverified until that fallback hash is parsed;
+- a pre-parsed exact fallback hash can complete the same page safely;
+- conflicting download ids, wrong final topic ids and conflicting magnet hashes
+  are rejected.
+
+Preserved invariants:
+- no title-only MegaPeer match can enter Search Results;
+- no generic film/search page is substituted for the selected release;
+- every emitted MegaPeer result still needs sourceVerified=true,
+  strictComplete=true and a real 40-hex info-hash.
+
+Next validation:
+- build Windows/Linux/macOS ARM;
+- on the macOS ARM artifact, compare the same queries that previously produced
+  only Rutor + NNM-Club and confirm MegaPeer rows now appear when MegaPeer itself
+  is reachable;
+- when MegaPeer rate-limits or challenges the app, confirm the UI reports that
+  provider issue instead of silently presenting it as zero matching torrents.
