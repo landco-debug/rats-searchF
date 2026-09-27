@@ -68,6 +68,10 @@ endif()
 
 project(rats-search VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH} LANGUAGES CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -171,6 +175,16 @@ file(GLOB_RECURSE RATS_CORE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/peer/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rest/*.cpp
 )
+if(APPLE)
+    list(APPEND RATS_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/net/cloudflare_clearance_mac.mm
+    )
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/net/cloudflare_clearance_mac.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+    )
+endif()
+
 file(GLOB_RECURSE RATS_CORE_HEADERS CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/common/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/domain/*.h
@@ -204,6 +218,15 @@ target_link_libraries(ratscore PUBLIC
     Qt6::WebSockets
     rats
 )
+
+if(APPLE)
+    find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
+    find_library(WEBKIT_FRAMEWORK WebKit REQUIRED)
+    target_link_libraries(ratscore PUBLIC
+        ${COCOA_FRAMEWORK}
+        ${WEBKIT_FRAMEWORK}
+    )
+endif()
 
 # The GUI / executable layer — everything the app binary compiles beyond the
 # ratscore library: pre-Application bootstrap helpers (src/bootstrap) and the Qt
