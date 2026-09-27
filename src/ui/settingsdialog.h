@@ -102,6 +102,10 @@ private:
     QCheckBox* indexerCheck_;
     QCheckBox* trackersCheck_;
 
+    // Authenticated tracker settings
+    QLineEdit* ruTrackerUsernameEdit_;
+    QLineEdit* ruTrackerPasswordEdit_;
+
     // Performance settings
     QSpinBox* walkIntervalSpin_;
 
