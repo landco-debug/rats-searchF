@@ -1266,14 +1266,25 @@ void MainWindow::performSearch(const QString& query)
     auto* rutracker = app_->ruTrackerRuSearch();
     auto* megapeer = app_->megaPeerSearch();
     auto* nnmclub = app_->nnmClubSearch();
-    if (rutor)
+    const bool ruTrackerConfigured = rutracker && rutracker->isConfigured();
+
+    QStringList activeProviders;
+    if (rutor) {
         ++strictSourcesPending_;
-    if (rutracker)
+        activeProviders << QStringLiteral("Rutor");
+    }
+    if (ruTrackerConfigured) {
         ++strictSourcesPending_;
-    if (megapeer)
+        activeProviders << QStringLiteral("RuTracker");
+    }
+    if (megapeer) {
         ++strictSourcesPending_;
-    if (nnmclub)
+        activeProviders << QStringLiteral("MegaPeer");
+    }
+    if (nnmclub) {
         ++strictSourcesPending_;
+        activeProviders << QStringLiteral("NNM-Club");
+    }
 
     if (strictSourcesPending_ == 0) {
         showStatusMessage(
@@ -1281,8 +1292,11 @@ void MainWindow::performSearch(const QString& query)
         return;
     }
 
-    showStatusMessage(
-        tr("🔍 Searching verified releases on Rutor + RuTracker.RU + MegaPeer + NNM-Club…"), 0);
+    QString searchStatus = tr("🔍 Searching verified releases on %1…")
+                               .arg(activeProviders.join(QStringLiteral(" + ")));
+    if (rutracker && !ruTrackerConfigured)
+        searchStatus += tr(" · RuTracker account not configured");
+    showStatusMessage(searchStatus, 0);
 
     // These are deliberately the ONLY discovery sources for Search Results.
     // Local index, P2P search and DHT-only hits cannot enter this table because
@@ -1291,7 +1305,7 @@ void MainWindow::performSearch(const QString& query)
     const QString contentType = typeComboBox->currentData().toString();
     if (rutor)
         rutor->search(trimmed, 50, sortKey, contentType);
-    if (rutracker)
+    if (ruTrackerConfigured)
         rutracker->search(trimmed, 50, sortKey, contentType);
     if (megapeer)
         megapeer->search(trimmed, 50, sortKey, contentType);

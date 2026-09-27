@@ -14,15 +14,20 @@ class QNetworkReply;
 
 namespace rats::net {
 
-// Async transport for the public RuTracker.RU source-first parser.
-// No result is emitted before its concrete topic page re-proves the exact
-// info-hash and passes RuTrackerRuSource::isStrictComplete().
+// Authenticated asynchronous RuTracker exact-source client.
+//
+// RuTracker search and topic metadata are account-gated. The client logs in
+// once per session, keeps the resulting cookies in its QNetworkAccessManager,
+// then verifies every result on its concrete topic page before emitting it.
 class RuTrackerRuSearchClient : public QObject {
     Q_OBJECT
 
 public:
     explicit RuTrackerRuSearchClient(QObject* parent = nullptr);
     ~RuTrackerRuSearchClient() override;
+
+    void setCredentials(const QString& username, const QString& password);
+    bool isConfigured() const;
 
     void search(const QString& query, int limit = 50,
         const QString& sortKey = QStringLiteral("seeders_desc"),
@@ -40,6 +45,8 @@ private:
         QUrl url;
     };
 
+    void authenticate(int generation);
+    void resetCookieJar();
     void fetchSearchPage(int generation);
     void processQueue(int generation);
     void fetchDetail(DetailJob job, int generation);
@@ -55,14 +62,18 @@ private:
     int requestedLimit_ = 50;
     int accepted_ = 0;
     int rejected_ = 0;
+    bool authenticated_ = false;
+    bool authRetried_ = false;
     bool searchPageResolved_ = false;
     bool finishedEmitted_ = true;
+    QString username_;
+    QString password_;
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
 
-    static constexpr int kTimeoutMs = 15000;
-    static constexpr int kMaxConcurrentDetails = 4;
+    static constexpr int kTimeoutMs = 20000;
+    static constexpr int kMaxConcurrentDetails = 2;
 };
 
 } // namespace rats::net

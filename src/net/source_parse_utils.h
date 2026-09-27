@@ -31,8 +31,7 @@ domain::ContentType contentTypeFromCategoryText(QString category);
 
 // Fast, non-authoritative prioritization for typed searches. It only changes
 // which exact candidates are verified first; final admission still depends on
-// source page/.torrent proof. An explicit source-category mismatch is the one
-// case that may be rejected before expensive detail/.torrent requests.
+// exact source proof. A mismatch lowers priority but is never rejected here.
 int contentTypeHintScore(
     const domain::Torrent& torrent, const QString& expectedType);
 

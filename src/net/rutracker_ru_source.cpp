@@ -1,6 +1,7 @@
 #include "net/rutracker_ru_source.h"
 
 #include "common/infohash.h"
+#include "net/source_parse_utils.h"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -9,68 +10,17 @@
 #include <QSet>
 #include <QStringList>
 #include <QUrlQuery>
-#include <algorithm>
 
 namespace rats::net {
 namespace {
 
-QString decodeEntities(QString text)
+QString rutrackerText(QString html)
 {
-    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-    text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
-    text.replace(QStringLiteral("&#160;"), QStringLiteral(" "));
-    text.replace(QChar(0x00A0), QLatin1Char(' '));
-    return text;
-}
-
-QString htmlToText(QString html)
-{
-    html.replace(QRegularExpression(QStringLiteral("<span\\b[^>]*class\\s*=\\s*[\"'][^\"']*\\bpost-br\\b[^\"']*[\"'][^>]*>"),
-                     QRegularExpression::CaseInsensitiveOption),
-        QStringLiteral("\n"));
-    html.replace(QRegularExpression(QStringLiteral("<br\\s*/?>"),
-                     QRegularExpression::CaseInsensitiveOption),
-        QStringLiteral("\n"));
-    html.replace(QRegularExpression(QStringLiteral("</t[dh]>"),
-                     QRegularExpression::CaseInsensitiveOption),
-        QStringLiteral(": "));
-    html.replace(QRegularExpression(QStringLiteral("</tr>"),
-                     QRegularExpression::CaseInsensitiveOption),
-        QStringLiteral("\n"));
     html.replace(QRegularExpression(
-                     QStringLiteral("</(?:p|div|li|pre|h[1-6])>"),
+                     QStringLiteral(R"(<span\b[^>]*class\s*=\s*["'][^"']*\bpost-br\b[^"']*["'][^>]*>)"),
                      QRegularExpression::CaseInsensitiveOption),
         QStringLiteral("\n"));
-    html.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
-    html = decodeEntities(html);
-
-    QStringList clean;
-    const QStringList lines
-        = html.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    for (QString line : lines) {
-        line.replace(QRegularExpression(QStringLiteral("[\\t ]+")), QStringLiteral(" "));
-        line = line.trimmed();
-        if (!line.isEmpty())
-            clean.append(line);
-    }
-    return clean.join(QLatin1Char('\n'));
-}
-
-QUrl resolveUrl(const QUrl& base, const QString& href)
-{
-    QUrl target(href);
-    if (target.isRelative())
-        return base.resolved(target);
-    if (target.scheme().isEmpty() && href.startsWith(QStringLiteral("//"))) {
-        target.setScheme(base.scheme());
-        return target;
-    }
-    return target;
+    return sourceparse::htmlToText(html);
 }
 
 QString firstMatch(const QString& text, const QString& pattern)
@@ -85,8 +35,27 @@ QString firstMatch(const QString& text, const QString& pattern)
 int firstInteger(const QString& text)
 {
     const QRegularExpression number(QStringLiteral(R"((\d+))"));
-    const QRegularExpressionMatch m = number.match(htmlToText(text));
+    const QRegularExpressionMatch m = number.match(sourceparse::stripHtml(text));
     return m.hasMatch() ? m.captured(1).toInt() : 0;
+}
+
+QString tableCellAt(const QString& row, int oneBasedIndex)
+{
+    if (oneBasedIndex <= 0)
+        return QString();
+
+    const QRegularExpression tdRe(
+        QStringLiteral(R"(<td\b[^>]*>.*?</td>)"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
+    auto cells = tdRe.globalMatch(row);
+    int index = 1;
+    while (cells.hasNext()) {
+        const QString cell = cells.next().captured(0);
+        if (index++ == oneBasedIndex)
+            return cell;
+    }
+    return QString();
 }
 
 QVector<QString> tableCells(const QString& row)
@@ -102,38 +71,101 @@ QVector<QString> tableCells(const QString& row)
     return cells;
 }
 
-qint64 sizeFromRow(const QString& row)
+QString openingTagForClass(const QString& row, const QString& className)
 {
-    const QVector<QString> cells = tableCells(row);
-    if (cells.size() < 6)
-        return 0;
+    const QString klass = QRegularExpression::escape(className);
+    const QRegularExpression re(
+        QStringLiteral(R"(<td\b(?=[^>]*class\s*=\s*(?:"[^"]*\b%1\b[^"]*"|'[^']*\b%1\b[^']*'))[^>]*>)")
+            .arg(klass),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch m = re.match(row);
+    return m.hasMatch() ? m.captured(0) : QString();
+}
 
-    // Current RuTracker.RU markup keeps the sortable byte count in a hidden
-    // <u> inside the sixth cell; Jackett uses the same field.
-    const QString bytes = firstMatch(cells.at(5),
-        QStringLiteral(R"(<u\b[^>]*>\s*(\d+)\s*</u>)"));
+qint64 dataTsValue(const QString& tag)
+{
+    const QString value = firstMatch(tag,
+        QStringLiteral(R"(data-ts_text\s*=\s*["'](-?\d+)["'])"));
     bool ok = false;
-    const qint64 value = bytes.toLongLong(&ok);
-    return ok ? value : 0;
+    const qint64 parsed = value.toLongLong(&ok);
+    return ok ? parsed : 0;
 }
 
 int counterFromClass(const QString& row, const QString& className)
 {
     const QString klass = QRegularExpression::escape(className);
     const QRegularExpression re(
-        QStringLiteral(R"(<td\b[^>]*class\s*=\s*(?:"[^"]*\b%1\b[^"]*"|'[^']*\b%1\b[^']*'|[^\s>]*\b%1\b[^\s>]*)[^>]*>(.*?)</td>)")
+        QStringLiteral(R"(<td\b(?=[^>]*class\s*=\s*(?:"[^"]*\b%1\b[^"]*"|'[^']*\b%1\b[^']*'))([^>]*)>(.*?)</td>)")
             .arg(klass),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
     const QRegularExpressionMatch m = re.match(row);
-    return m.hasMatch() ? firstInteger(m.captured(1)) : 0;
+    if (!m.hasMatch())
+        return 0;
+
+    const qint64 ts = dataTsValue(m.captured(1));
+    if (ts > 0)
+        return static_cast<int>(ts);
+    return firstInteger(m.captured(2));
+}
+
+QDateTime publishDateFromRow(const QString& row)
+{
+    const QString cell = tableCellAt(row, 10);
+    const qint64 seconds = dataTsValue(cell);
+    return seconds > 0
+        ? QDateTime::fromSecsSinceEpoch(seconds, Qt::UTC)
+        : QDateTime();
+}
+
+bool isRuTrackerHost(QString host)
+{
+    host = host.toLower();
+    if (host.startsWith(QStringLiteral("www.")))
+        host.remove(0, 4);
+    return host == QStringLiteral("rutracker.org")
+        || host == QStringLiteral("rutracker.net")
+        || host == QStringLiteral("rutracker.nl");
+}
+
+int topicIdFromUrl(const QUrl& url)
+{
+    if (!url.isValid() || !isRuTrackerHost(url.host())
+        || !url.path().endsWith(QStringLiteral("/forum/viewtopic.php"))) {
+        return 0;
+    }
+    QUrlQuery query(url);
+    bool ok = false;
+    const int id = query.queryItemValue(QStringLiteral("t")).toInt(&ok);
+    return ok ? id : 0;
+}
+
+QString firstPostBody(const QString& html)
+{
+    const QRegularExpression openRe(
+        QStringLiteral(R"(<div\b[^>]*class\s*=\s*(?:"[^"]*\bpost_body\b[^"]*"|'[^']*\bpost_body\b[^']*')[^>]*>)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch open = openRe.match(html);
+    if (!open.hasMatch())
+        return QString();
+
+    const int start = open.capturedEnd();
+    int end = html.indexOf(QStringLiteral("<!--/post_body-->"), start, Qt::CaseInsensitive);
+    if (end < 0) {
+        end = html.indexOf(QRegularExpression(
+            QStringLiteral(R"(<div\b[^>]*class\s*=\s*["'][^"']*\bpost-footer\b)"),
+            QRegularExpression::CaseInsensitiveOption), start);
+    }
+    if (end < 0)
+        end = qMin(html.size(), start + 180000);
+    return html.mid(start, end - start);
 }
 
 QJsonArray audioLines(const QString& description, bool audioRelease)
 {
     QJsonArray out;
-    const QStringList lines
-        = description.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+    const QStringList lines = description.split(
+        QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
     const QRegularExpression explicitAudio(
         QStringLiteral("^\\s*(?:Audio|Аудио|Звук|Sound)\\s*#?\\d*\\s*:"),
         QRegularExpression::CaseInsensitiveOption);
@@ -155,95 +187,6 @@ QJsonArray audioLines(const QString& description, bool audioRelease)
     return out;
 }
 
-QString firstPostBody(const QString& html)
-{
-    const QRegularExpression openRe(
-        QStringLiteral(R"(<div\b[^>]*class\s*=\s*(?:"[^"]*\bpost_body\b[^"]*"|'[^']*\bpost_body\b[^']*')[^>]*>)"),
-        QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch open = openRe.match(html);
-    if (!open.hasMatch())
-        return QString();
-
-    const int start = open.capturedEnd();
-
-    // RuTracker terminates the first-post body with this explicit HTML marker.
-    // Using it prevents technical lines from a later forum reply from ever
-    // satisfying our strict-release completeness check.
-    int end = html.indexOf(QStringLiteral("<!--/post_body-->"), start,
-        Qt::CaseInsensitive);
-    if (end < 0) {
-        // Tolerate mirror/template changes but keep extraction bounded to the
-        // first post area rather than the rest of the discussion.
-        end = html.indexOf(QRegularExpression(
-            QStringLiteral(R"(<tbody\b[^>]*id\s*=\s*["']post_\d+["'])"),
-            QRegularExpression::CaseInsensitiveOption), start);
-    }
-    if (end < 0)
-        end = qMin(html.size(), start + 180000);
-    return html.mid(start, end - start);
-}
-
-bool isPublicRuTrackerUrl(const QUrl& url)
-{
-    return url.isValid()
-        && url.host().compare(QStringLiteral("rutracker.ru"), Qt::CaseInsensitive) == 0
-        && url.path().endsWith(QStringLiteral("/viewtopic.php"));
-}
-
-const QSet<int>& audioForums()
-{
-    static const QSet<int> ids = {
-        730,776,777,1156,1158,1233,1159,1315,1223,1635,1637,1643,1636,1639,1640,1177,1642,1427,1641,
-        1561,1598,1599,1600,1601,1200,1552,1565,1554,1553,1567,1566,1713,1556,1588,1580,1581,1582,
-        1583,1584,1585,1586,1587,1602,1590,1591,1592,1593,1594,1595,1596,1597,1626,1627,1628,1610,
-        1611,1457,1613,1614,1203,1615,1616,1617,1618,1205,1619,1620,1206,1575,1576,1577,1630,1631,
-        1633,1540,1604,1562,1185,1183,1664,1665,1666,1667,1668,1670,1746,1669,1740,1679,1680,1681,
-        1682,1683,1684,1685,1686,1687,1688,1689,1690,1691,1692,1693
-    };
-    return ids;
-}
-const QSet<int>& videoForums()
-{
-    static const QSet<int> ids = {
-        1748,1757,1749,1758,1735,1736,1737,1738,1739,1695,1697,1696,1698,1699,1701,1702,1671,1677,
-        1676,1675,1674,1673,1672,1656,1662,1661,1660,1659,1658,1657,1730,1731,1732,1733,1725,1726,
-        1727,1728,1719,1720,1721,1722,1715,1734,1716,820,840,841,825,830,1317,838,845,1560,798,802,
-        801,1318,1751,1752,1754,1756,1742,1743,1744,1745,1708,1710,1709,1711,1705,1086,1085,1551,
-        1087,1703,1083,1082,1084,125,1353,1355,1352,1343,1025,8,1347,1348,1349,12,13
-    };
-    return ids;
-}
-const QSet<int>& bookForums(){ static const QSet<int> ids={726,728,761,760,757,1314,722,727,1021,1020}; return ids; }
-const QSet<int>& gameForums(){ static const QSet<int> ids={60,73,61,1234,84,82,85,78,77,76,1538,1539,878}; return ids; }
-const QSet<int>& softwareForums()
-{
-    static const QSet<int> ids = {
-        105,1663,1120,706,212,210,213,215,1395,107,1405,1398,193,1518,195,341,196,969,1523,1505,201,
-        1506,1508,1509,1507,108,217,218,222,1404,1522,1504,220,221,219,1511,1512,1513,1514,1515,1516,
-        110,966,1500,1501,967,965,1499,1502,1503,968,1287,1307,1306,1305,1289,1302,1301,1298,1293,
-        1292,1291,1294,1303,1300,1299,1296,1295
-    };
-    return ids;
-}
-domain::ContentType contentTypeForForum(int forumId)
-{
-    if (audioForums().contains(forumId)) return domain::ContentType::Audio;
-    if (videoForums().contains(forumId)) return domain::ContentType::Video;
-    if (bookForums().contains(forumId)) return domain::ContentType::Books;
-    if (gameForums().contains(forumId)) return domain::ContentType::Games;
-    if (softwareForums().contains(forumId)) return domain::ContentType::Software;
-    return domain::ContentType::Unknown;
-}
-const QSet<int>* forumsForType(const QString& type)
-{
-    const QString key=type.trimmed().toLower();
-    if(key==QStringLiteral("audio")) return &audioForums();
-    if(key==QStringLiteral("video")) return &videoForums();
-    if(key==QStringLiteral("books")) return &bookForums();
-    if(key==QStringLiteral("games")) return &gameForums();
-    if(key==QStringLiteral("software")) return &softwareForums();
-    return nullptr;
-}
 
 } // namespace
 
@@ -255,7 +198,7 @@ int RuTrackerRuSource::sortColumn(const QString& sortKey)
         return 7;
     if (sortKey.startsWith(QStringLiteral("name_")))
         return 2;
-    return 1; // registered/date
+    return 1;
 }
 
 int RuTrackerRuSource::sortDirection(const QString& sortKey)
@@ -263,16 +206,18 @@ int RuTrackerRuSource::sortDirection(const QString& sortKey)
     return sortKey.endsWith(QStringLiteral("_asc")) ? 1 : 2;
 }
 
-QUrl RuTrackerRuSource::searchUrl(const QString& query, const QString& sortKey, const QString& contentType)
+QUrl RuTrackerRuSource::searchUrl(
+    const QString& query, const QString& sortKey, const QString& contentType)
 {
-    QUrl url(QStringLiteral("http://rutracker.ru/tracker.php"));
+    Q_UNUSED(contentType);
+
+    QUrl url(QStringLiteral("https://rutracker.org/forum/tracker.php"));
     QUrlQuery q;
-    if (const QSet<int>* forums=forumsForType(contentType); forums && !forums->isEmpty()) {
-        QList<int> sorted=forums->values(); std::sort(sorted.begin(),sorted.end());
-        for(int forumId:sorted) q.addQueryItem(QStringLiteral("f[]"),QString::number(forumId));
-    } else {
-        q.addQueryItem(QStringLiteral("f[]"),QStringLiteral("-1"));
-    }
+    // Keep server-side category scope broad. RuTracker forum IDs evolve and a
+    // stale hand-maintained mapping must never make a typed search lose recall.
+    // Source category is still captured from each row and used for prioritizing
+    // and final client-side filtering.
+    q.addQueryItem(QStringLiteral("f[]"), QStringLiteral("-1"));
     q.addQueryItem(QStringLiteral("prev_allw"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("prev_a"), QStringLiteral("0"));
     q.addQueryItem(QStringLiteral("prev_dla"), QStringLiteral("0"));
@@ -306,71 +251,104 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
     const QByteArray& rawData, const QUrl& pageUrl, int maxCandidates)
 {
     QVector<domain::Torrent> out;
-    if (rawData.isEmpty() || maxCandidates <= 0)
+    if (rawData.isEmpty() || !pageUrl.isValid() || maxCandidates <= 0)
         return out;
 
-    const QString html = QString::fromUtf8(rawData);
+    const QString html = sourceparse::decodeTrackerText(rawData);
     const QRegularExpression rowRe(
-        QStringLiteral(R"(<tr\b[^>]*id\s*=\s*["']tor_(\d+)["'][^>]*>(.*?)</tr>)"),
+        QStringLiteral(R"(<tr\b[^>]*id\s*=\s*["']trs-tr-(\d+)["'][^>]*>(.*?)</tr>)"),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
     const QRegularExpression detailRe(
-        QStringLiteral(R"re(<a\b[^>]*href\s*=\s*["']([^"']*viewtopic\.php\?t=(\d+)[^"']*)["'][^>]*>(.*?)</a>)re"),
+        QStringLiteral(
+            R"re(<a\b[^>]*href\s*=\s*["']([^"']*viewtopic\.php\?t=(\d+)[^"']*)["'][^>]*>(.*?)</a>)re"),
         QRegularExpression::CaseInsensitiveOption
             | QRegularExpression::DotMatchesEverythingOption);
-    const QRegularExpression magnetRe(
-        QStringLiteral(R"re(href\s*=\s*["'](magnet:\?[^"']*xt=urn:btih:([A-Fa-f0-9]{40})[^"']*)["'])re"),
-        QRegularExpression::CaseInsensitiveOption
-            | QRegularExpression::DotMatchesEverythingOption);
-    const QRegularExpression forumRe(
-        QStringLiteral(R"re(href\s*=\s*["'][^"']*tracker\.php\?f=(\d+)[^"']*["'])re"),
+    const QRegularExpression topicDataRe(
+        QStringLiteral(R"(data-topic_id\s*=\s*["'](\d+)["'])"),
         QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression downloadRe(
+        QStringLiteral(
+            R"re(<a\b[^>]*href\s*=\s*["']([^"']*dl\.php\?t=(\d+)[^"']*)["'][^>]*>)re"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression forumRe(
+        QStringLiteral(
+            R"re(<a\b[^>]*href\s*=\s*["'][^"']*tracker\.php\?f=(\d+)[^"']*["'][^>]*>(.*?)</a>)re"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
 
-    QSet<QString> seen;
+    QSet<int> seen;
     auto rows = rowRe.globalMatch(html);
     while (rows.hasNext() && out.size() < maxCandidates) {
-        const QString row = rows.next().captured(2);
+        const QRegularExpressionMatch rowMatch = rows.next();
+        const int rowTopicId = rowMatch.captured(1).toInt();
+        const QString row = rowMatch.captured(2);
+
         const QRegularExpressionMatch detail = detailRe.match(row);
-        const QRegularExpressionMatch magnet = magnetRe.match(row);
-        if (!detail.hasMatch() || !magnet.hasMatch())
+        if (!detail.hasMatch())
+            continue;
+        const int linkTopicId = detail.captured(2).toInt();
+        if (rowTopicId <= 0 || linkTopicId != rowTopicId || seen.contains(rowTopicId))
             continue;
 
-        const QString hash = infohash::normalize(magnet.captured(2));
-        if (!infohash::isValid(hash) || seen.contains(hash))
+        const QRegularExpressionMatch dataTopic = topicDataRe.match(row);
+        if (dataTopic.hasMatch() && dataTopic.captured(1).toInt() != rowTopicId)
             continue;
 
-        const QUrl sourceUrl = resolveUrl(pageUrl, detail.captured(1));
-        if (!isPublicRuTrackerUrl(sourceUrl))
+        const QUrl sourceUrl = sourceparse::resolveUrl(pageUrl, detail.captured(1));
+        if (topicIdFromUrl(sourceUrl) != rowTopicId)
             continue;
 
-        const QString name = htmlToText(detail.captured(3)).trimmed();
+        const QString name = sourceparse::stripHtml(detail.captured(3)).trimmed();
         if (name.isEmpty())
             continue;
 
         domain::Torrent torrent;
-        torrent.hash = hash;
         torrent.name = name;
-        torrent.size = sizeFromRow(row);
         torrent.seeders = counterFromClass(row, QStringLiteral("seedmed"));
+        if (torrent.seeders <= 0)
+            torrent.seeders = firstInteger(tableCellAt(row, 7));
         torrent.leechers = counterFromClass(row, QStringLiteral("leechmed"));
+        if (torrent.leechers <= 0)
+            torrent.leechers = firstInteger(tableCellAt(row, 8));
+        torrent.added = publishDateFromRow(row);
+
+        const QString sizeTag = openingTagForClass(row, QStringLiteral("tor-size"));
+        const qint64 size = dataTsValue(sizeTag);
+        if (size > 0)
+            torrent.size = size;
 
         QJsonObject info;
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
-        info[QStringLiteral("sourceTopicId")] = detail.captured(2).toInt();
+        info[QStringLiteral("sourceTopicId")] = rowTopicId;
         info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
+        info[QStringLiteral("sourceVerified")] = false;
+
+        const QRegularExpressionMatch download = downloadRe.match(row);
+        if (download.hasMatch() && download.captured(2).toInt() == rowTopicId) {
+            const QUrl torrentUrl = sourceparse::resolveUrl(pageUrl, download.captured(1));
+            if (torrentUrl.isValid())
+                info[QStringLiteral("sourceTorrentUrl")] = torrentUrl.toString();
+        }
+
         const QRegularExpressionMatch forum = forumRe.match(row);
         if (forum.hasMatch()) {
             const int forumId = forum.captured(1).toInt();
+            const QString categoryText
+                = sourceparse::stripHtml(forum.captured(2)).trimmed();
             info[QStringLiteral("sourceForumId")] = forumId;
-            torrent.contentType = contentTypeForForum(forumId);
-            if (torrent.contentType != domain::ContentType::Unknown)
+            if (!categoryText.isEmpty())
+                info[QStringLiteral("sourceCategory")] = categoryText;
+            torrent.contentType
+                = sourceparse::contentTypeFromCategoryText(categoryText);
+            if (torrent.contentType != domain::ContentType::Unknown) {
                 info[QStringLiteral("contentTypeEvidence")]
                     = QStringLiteral("source-category");
+            }
         }
-        info[QStringLiteral("sourceVerified")] = false;
-        torrent.info = info;
 
-        seen.insert(hash);
+        torrent.info = info;
+        seen.insert(rowTopicId);
         out.append(std::move(torrent));
     }
 
@@ -380,54 +358,71 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
 bool RuTrackerRuSource::applyDetailPage(
     domain::Torrent& torrent, const QByteArray& rawData, const QUrl& finalUrl)
 {
-    if (!torrent.isValid() || rawData.isEmpty())
+    if (torrent.name.trimmed().isEmpty() || rawData.isEmpty())
         return false;
 
-    const QString html = QString::fromUtf8(rawData);
+    const int expectedTopic
+        = torrent.info.value(QStringLiteral("sourceTopicId")).toInt();
+    if (expectedTopic <= 0)
+        return false;
 
+    const int finalTopic = topicIdFromUrl(finalUrl);
+    if (finalTopic > 0 && finalTopic != expectedTopic)
+        return false;
+
+    QUrl sourceUrl = finalTopic == expectedTopic
+        ? finalUrl
+        : QUrl(torrent.info.value(QStringLiteral("sourceUrl")).toString());
+    if (topicIdFromUrl(sourceUrl) != expectedTopic)
+        return false;
+
+    const QString html = sourceparse::decodeTrackerText(rawData);
     const QRegularExpression magnetRe(
         QStringLiteral(R"(xt=urn:btih:([A-Fa-f0-9]{40}))"),
         QRegularExpression::CaseInsensitiveOption);
-    bool exactHash = false;
-    auto magnets = magnetRe.globalMatch(html);
-    while (magnets.hasNext()) {
-        if (infohash::normalize(magnets.next().captured(1)) == torrent.hash) {
-            exactHash = true;
-            break;
-        }
-    }
-    if (!exactHash)
+    const QRegularExpressionMatch magnet = magnetRe.match(html);
+    if (!magnet.hasMatch())
         return false;
 
+    const QString hash = infohash::normalize(magnet.captured(1));
+    if (!infohash::isValid(hash))
+        return false;
+    torrent.hash = hash;
+
     const QString title = firstMatch(html,
-        QStringLiteral(R"(<[^>]*id\s*=\s*["']topic-title["'][^>]*>(.*?)</[^>]+>)"));
+        QStringLiteral(
+            R"(<[^>]*id\s*=\s*["']topic-title["'][^>]*>(.*?)</[^>]+>)"));
     if (!title.isEmpty())
-        torrent.name = htmlToText(title);
+        torrent.name = sourceparse::stripHtml(title);
 
     QString postHtml = firstPostBody(html);
     if (postHtml.isEmpty())
         postHtml = html;
-    const QString description = htmlToText(postHtml).trimmed();
+    const QString description = rutrackerText(postHtml).trimmed();
     if (description.isEmpty())
         return false;
 
     QJsonObject info = torrent.info;
     info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
     info[QStringLiteral("sourceVerified")] = true;
+    info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("description")] = description;
 
-    QUrl sourceUrl = finalUrl;
-    if (!isPublicRuTrackerUrl(sourceUrl))
-        sourceUrl = QUrl(info.value(QStringLiteral("sourceUrl")).toString());
-    if (!isPublicRuTrackerUrl(sourceUrl))
-        return false;
-    info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
+    if (info.value(QStringLiteral("sourceTorrentUrl")).toString().isEmpty()) {
+        QUrl downloadUrl(sourceUrl);
+        downloadUrl.setPath(QStringLiteral("/forum/dl.php"));
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("t"), QString::number(expectedTopic));
+        downloadUrl.setQuery(q);
+        info[QStringLiteral("sourceTorrentUrl")] = downloadUrl.toString();
+    }
 
     QString quality = firstMatch(description,
         QStringLiteral(R"((?:Качество|Quality)\s*:\s*([^\n]+))"));
     if (quality.isEmpty()) {
         quality = firstMatch(torrent.name,
-            QStringLiteral(R"(\b(2160p|1080p|720p|576p|480p|4K|UHD|BluRay|BDRip|BDRemux|REMUX|WEB[- .]?DL|WEBRip|HDLight)\b)"));
+            QStringLiteral(
+                R"(\b(2160p|1080p|720p|576p|480p|4K|UHD|BluRay|BDRip|BDRemux|REMUX|WEB[- .]?DL|WEBRip|HDLight)\b)"));
     }
     if (!quality.isEmpty())
         info[QStringLiteral("quality")] = quality;
@@ -436,11 +431,13 @@ bool RuTrackerRuSource::applyDetailPage(
         QStringLiteral(R"((?:Видео|Video)\s*:\s*([^\n]+))"));
     if (video.isEmpty()) {
         video = firstMatch(description,
-            QStringLiteral(R"(\b((?:HEVC|H[ .]?265|x265|AVC|H[ .]?264|x264)[^\n]{0,160})\b)"));
+            QStringLiteral(
+                R"(\b((?:HEVC|H[ .]?265|x265|AVC|H[ .]?264|x264)[^\n]{0,160})\b)"));
     }
     if (!video.isEmpty()) {
         info[QStringLiteral("video")] = video;
-        if (torrent.contentType == domain::ContentType::Unknown) torrent.contentType = domain::ContentType::Video;
+        if (torrent.contentType == domain::ContentType::Unknown)
+            torrent.contentType = domain::ContentType::Video;
     }
 
     const QJsonArray audio = audioLines(
@@ -454,9 +451,10 @@ bool RuTrackerRuSource::applyDetailPage(
         info[QStringLiteral("subtitles")] = subtitles;
 
     const QString poster = firstMatch(postHtml,
-        QStringLiteral(R"re(<img\b[^>]*class\s*=\s*["'][^"']*\bpostImg(?:Aligned)?\b[^"']*["'][^>]*(?:title|src)\s*=\s*["']([^"']+)["'])re"));
+        QStringLiteral(
+            R"re(<img\b[^>]*class\s*=\s*["'][^"']*\bpostImg(?:Aligned)?\b[^"']*["'][^>]*(?:title|src)\s*=\s*["']([^"']+)["'])re"));
     if (!poster.isEmpty())
-        info[QStringLiteral("poster")] = decodeEntities(poster);
+        info[QStringLiteral("poster")] = sourceparse::decodeEntities(poster);
 
     torrent.info = info;
     torrent.info[QStringLiteral("strictComplete")] = isStrictComplete(torrent);
@@ -474,9 +472,13 @@ bool RuTrackerRuSource::isStrictComplete(const domain::Torrent& torrent)
     if (!info.value(QStringLiteral("sourceVerified")).toBool())
         return false;
 
-    const QUrl sourceUrl(info.value(QStringLiteral("sourceUrl")).toString());
-    if (!isPublicRuTrackerUrl(sourceUrl))
+    const int expectedTopic
+        = info.value(QStringLiteral("sourceTopicId")).toInt();
+    if (expectedTopic <= 0
+        || topicIdFromUrl(QUrl(info.value(QStringLiteral("sourceUrl")).toString()))
+            != expectedTopic) {
         return false;
+    }
 
     const QString description
         = info.value(QStringLiteral("description")).toString().trimmed();
@@ -490,11 +492,12 @@ bool RuTrackerRuSource::isStrictComplete(const domain::Torrent& torrent)
     const bool hasAudio
         = !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
 
-    // The forum id is RuTracker's own category signal. Once an exact
-    // viewtopic page has re-proved the same info-hash, that source-native
-    // category is stronger than optional wording inside the post body.
     if (torrent.contentType != domain::ContentType::Unknown
         && !info.value(QStringLiteral("contentTypeEvidence")).toString().isEmpty()) {
+        if (torrent.contentType == domain::ContentType::Video)
+            return hasQuality && hasVideo && hasAudio;
+        if (torrent.contentType == domain::ContentType::Audio)
+            return hasAudio;
         return true;
     }
 
