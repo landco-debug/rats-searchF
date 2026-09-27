@@ -769,6 +769,10 @@ Commits in this stage:
   `fix: reduce MegaPeer request pressure and surface failures`
 - `25111bed00779fff50c662220d4f833c66a71071`
   `test: cover MegaPeer detail-first identity and fallback`
+- `10e8f7f31f9a77d7814868527d55bfe664465c1c`
+  `fix: classify MegaPeer from full exact detail page`
+- `91e766408cd46ccbd272be983700876264a05b09`
+  `test: keep MegaPeer category outside release description`
 
 Implemented:
 - MegaPeer now fetches the exact detail page first;
@@ -782,6 +786,8 @@ Implemented:
   parsed, avoiding a second detail-page request;
 - normal successful candidates therefore use one post-listing request instead
   of two;
+- category classification is read from the full exact detail page because current
+  MegaPeer keeps the category table outside the release-description block;
 - per-source detail concurrency is reduced from 4 to 2;
 - provider/network failures are counted and, if MegaPeer produces no verified
   result, surfaced through the existing source-status path instead of silently
