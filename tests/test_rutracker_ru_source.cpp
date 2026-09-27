@@ -15,6 +15,7 @@ private slots:
     void parsesCurrentExactSearchRowWithoutPretendingHashIsPublic();
     void forumLabelClassifiesAudio();
     void detailPageCompletesIdentityFromExactMagnet();
+    void detailPageKeepsFullNestedTopicTitle();
     void audioDetailPageIsStrictWithoutVideo();
     void sparseExactReleaseIsNotHiddenByFieldParsing();
     void wrongTopicPageIsRejected();
@@ -174,6 +175,42 @@ void TestRuTrackerRuSource::detailPageCompletesIdentityFromExactMagnet()
     QVERIFY(!t.info.value(QStringLiteral("video")).toString().isEmpty());
     QCOMPARE(t.info.value(QStringLiteral("audioTracks")).toArray().size(), 2);
     QVERIFY(RuTrackerRuSource::isStrictComplete(t));
+}
+
+
+void TestRuTrackerRuSource::detailPageKeepsFullNestedTopicTitle()
+{
+    Torrent t;
+    t.name = QStringLiteral("Багровый прилив / Crimson Tide (1995) BDRip");
+    t.contentType = rats::domain::ContentType::Video;
+    t.info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
+    t.info[QStringLiteral("sourceTopicId")] = 779;
+    t.info[QStringLiteral("sourceUrl")]
+        = QStringLiteral("https://rutracker.org/forum/viewtopic.php?t=779");
+
+    const QByteArray html = QStringLiteral(R"(
+      <html><body>
+      <a id="topic-title" href="viewtopic.php?t=779">
+        <b>Багровый</b> прилив / Crimson Tide (1995)
+        <span class="release-note">BDRip 1080p</span>
+      </a>
+      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef">magnet</a>
+      <div class="post_body">
+      Качество: BDRip 1080p<span class="post-br"></span>
+      Видео: AVC / H.264, 1920x1080<span class="post-br"></span>
+      Аудио #1: Russian AC3 5.1<span class="post-br"></span>
+      Подробное описание конкретной раздачи фильма с техническими параметрами,
+      источником, вариантом кодирования и сведениями о звуковых дорожках.
+      </div><!--/post_body-->
+      </body></html>)").toUtf8();
+
+    QVERIFY(RuTrackerRuSource::applyDetailPage(
+        t, html, QUrl(QStringLiteral(
+            "https://rutracker.org/forum/viewtopic.php?t=779"))));
+
+    QCOMPARE(t.name,
+        QStringLiteral("Багровый прилив / Crimson Tide (1995) BDRip 1080p"));
+    QVERIFY(t.name != QStringLiteral("Багровый"));
 }
 
 void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()
