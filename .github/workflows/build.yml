@@ -351,16 +351,26 @@ jobs:
           cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
           ln -s /Applications dmg-contents/Applications
           
-          # Create DMG
-          hdiutil create \
-            -volname "Rats Search" \
-            -srcfolder dmg-contents \
-            -ov \
-            -format UDZO \
-            "$DMG_NAME"
-          
-          echo "Created: $DMG_NAME"
-          ls -la "$DMG_NAME"
+          # hdiutil can report "Resource busy" on shared macOS runners after
+          # signing. Retry transient failures; always deliver the signed app
+          # as a ZIP if the disk-image service remains unavailable.
+          for attempt in 1 2 3; do
+            if hdiutil create \
+              -volname "Rats Search" \
+              -srcfolder dmg-contents \
+              -ov \
+              -format UDZO \
+              "$DMG_NAME"; then
+              echo "Created: $DMG_NAME"
+              exit 0
+            fi
+            rm -f "$DMG_NAME"
+            sleep 10
+          done
+          ZIP_NAME="RatsSearch-macOS-ARM-${VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dmg-contents/Rats Search.app" "$ZIP_NAME"
+          echo "Created ZIP fallback: $ZIP_NAME"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
@@ -379,8 +389,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          # pull_request workflows normally checkout GitHub's temporary merge
+          # commit. For user-testable macOS artifacts we need the exact branch
+          # HEAD that AGENTS.md and the conversation refer to.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: recursive
           persist-credentials: false
+
+      - name: Verify checked-out source revision
+        run: |
+          EXPECTED="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "Expected source: $EXPECTED"
+          echo "Checked out:     $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
 
       - name: Install Ninja
         run: brew install ninja
@@ -516,11 +538,15 @@ jobs:
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
+            SOURCE_SHA="${{ github.sha }}"
           else
-            VERSION="dev-$(echo ${{ github.sha }} | cut -c1-7)"
+            SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+            VERSION="head-$(echo "$SOURCE_SHA" | cut -c1-7)"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "SOURCE_SHA=$SOURCE_SHA" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+          echo "Source revision: $SOURCE_SHA"
 
       - name: Create DMG
         run: |
@@ -530,6 +556,7 @@ jobs:
           # Create a temporary directory for DMG contents
           mkdir -p dmg-contents
           cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
+          printf '%s\n' "source_sha=${{ steps.version.outputs.SOURCE_SHA }}" > "dmg-contents/BUILD-REVISION.txt"
           ln -s /Applications dmg-contents/Applications
           
           # Create DMG
@@ -547,7 +574,9 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: RatsSearch-macOS-ARM
-          path: RatsSearch-macOS-ARM-*.dmg
+          path: |
+            RatsSearch-macOS-ARM-*.dmg
+            RatsSearch-macOS-ARM-*.zip
           retention-days: 30
 
   build-linux:
