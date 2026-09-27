@@ -39,6 +39,25 @@ int firstInteger(const QString& text)
     return m.hasMatch() ? m.captured(1).toInt() : 0;
 }
 
+QString tableCellAt(const QString& row, int oneBasedIndex)
+{
+    if (oneBasedIndex <= 0)
+        return QString();
+
+    const QRegularExpression tdRe(
+        QStringLiteral(R"(<td\b[^>]*>.*?</td>)"),
+        QRegularExpression::CaseInsensitiveOption
+            | QRegularExpression::DotMatchesEverythingOption);
+    auto cells = tdRe.globalMatch(row);
+    int index = 1;
+    while (cells.hasNext()) {
+        const QString cell = cells.next().captured(0);
+        if (index++ == oneBasedIndex)
+            return cell;
+    }
+    return QString();
+}
+
 QVector<QString> tableCells(const QString& row)
 {
     QVector<QString> cells;
@@ -92,22 +111,11 @@ int counterFromClass(const QString& row, const QString& className)
 
 QDateTime publishDateFromRow(const QString& row)
 {
-    const QRegularExpression tdRe(
-        QStringLiteral(R"(<td\b([^>]*)>(.*?)</td>)"),
-        QRegularExpression::CaseInsensitiveOption
-            | QRegularExpression::DotMatchesEverythingOption);
-    auto cells = tdRe.globalMatch(row);
-    int index = 0;
-    while (cells.hasNext()) {
-        const QRegularExpressionMatch cell = cells.next();
-        if (index++ != 9)
-            continue;
-        const qint64 seconds = dataTsValue(cell.captured(1));
-        return seconds > 0
-            ? QDateTime::fromSecsSinceEpoch(seconds, Qt::UTC)
-            : QDateTime();
-    }
-    return {};
+    const QString cell = tableCellAt(row, 10);
+    const qint64 seconds = dataTsValue(cell);
+    return seconds > 0
+        ? QDateTime::fromSecsSinceEpoch(seconds, Qt::UTC)
+        : QDateTime();
 }
 
 bool isRuTrackerHost(QString host)
@@ -298,7 +306,11 @@ QVector<domain::Torrent> RuTrackerRuSource::parseSearchPage(
         domain::Torrent torrent;
         torrent.name = name;
         torrent.seeders = counterFromClass(row, QStringLiteral("seedmed"));
+        if (torrent.seeders <= 0)
+            torrent.seeders = firstInteger(tableCellAt(row, 7));
         torrent.leechers = counterFromClass(row, QStringLiteral("leechmed"));
+        if (torrent.leechers <= 0)
+            torrent.leechers = firstInteger(tableCellAt(row, 8));
         torrent.added = publishDateFromRow(row);
 
         const QString sizeTag = openingTagForClass(row, QStringLiteral("tor-size"));
