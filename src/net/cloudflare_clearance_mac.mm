@@ -122,12 +122,7 @@ struct CloudflareClearance::Impl {
             return;
         }
 
-        NSString* script = @"(() => ({"
-                           "title: document.title || '',"
-                           "html: document.documentElement ? document.documentElement.outerHTML : '',"
-                           "ua: navigator.userAgent || '',"
-                           "href: location.href || ''"
-                           "}))()";
+        NSString* script = @"(() => ({title: document.title || '', html: document.documentElement ? document.documentElement.outerHTML : '', ua: navigator.userAgent || '', href: location.href || ''}))()";
 
         [webView evaluateJavaScript:script
                  completionHandler:^(id result, NSError* error) {
@@ -194,7 +189,6 @@ struct CloudflareClearance::Impl {
                     qtCookie.setDomain(domain);
                     qtCookie.setPath(toQString(cookie.path));
                     qtCookie.setSecure(cookie.secure);
-                    qtCookie.setHttpOnly(cookie.HTTPOnly);
                     if (cookie.expiresDate) {
                         const qint64 msecs = static_cast<qint64>(
                             [cookie.expiresDate timeIntervalSince1970] * 1000.0);
@@ -255,8 +249,9 @@ struct CloudflareClearance::Impl {
         window.opaque = NO;
         [window orderFrontRegardless];
 
+        const QByteArray encodedUrl = url.toEncoded();
         NSURL* nsUrl = [NSURL URLWithString:
-            [NSString stringWithUTF8String:url.toEncoded().constData()]];
+            [NSString stringWithUTF8String:encodedUrl.constData()]];
         if (!nsUrl) {
             fail(q->tr("Invalid protected tracker URL."));
             return;
