@@ -643,7 +643,10 @@ void RuTrackerRuSearchClient::fetchDetail(
 {
 #ifdef __APPLE__
     if (browserMode_) {
-        browser_->get(job.url, [this, generation, job = std::move(job)](
+        // Evaluate the URL before moving job into the callback. Function
+        // arguments have no guaranteed left-to-right evaluation order.
+        const QUrl detailUrl = job.url;
+        browser_->get(detailUrl, [this, generation, job = std::move(job)](
                        const QByteArray& body, const QUrl& finalUrl,
                        const QString& error) mutable {
             if (generation != generation_ || finishedEmitted_)
@@ -710,6 +713,15 @@ void RuTrackerRuSearchClient::finishIfIdle(int generation)
         || !detailQueue_.isEmpty()) {
         return;
     }
+#ifdef __APPLE__
+    if (browserMode_ && accepted_ == 0 && rejected_ > 0) {
+        finishNow(generation,
+            tr("RuTracker returned search rows, but none of %1 detail pages "
+               "passed exact-release verification or the selected type filter.")
+                .arg(rejected_));
+        return;
+    }
+#endif
     finishNow(generation);
 }
 

@@ -1072,3 +1072,16 @@ Stage 30 runtime hotfix (commit message:
 Runtime acceptance still required on macOS: sign in if asked, search for a known
 RuTracker release, confirm an `RT` result; run a second search after closing
 an unsuccessful browser window; quit/relaunch and search again. Keep PR draft.
+
+Stage 30 detail navigation hotfix (commit message:
+`fix: preserve RuTracker detail URLs in browser callbacks`):
+- user successfully signed in and the browser window closed, but repeated
+  searches produced no RuTracker results;
+- in the browser detail branch, `browser_->get(job.url, [job = std::move(job)]...`)
+  used the same object in two function arguments whose evaluation order is
+  unspecified; Clang can move `job` before evaluating `job.url`, so WebKit
+  receives an empty detail URL and no verified releases reach the results;
+- copy the detail URL before moving `job` into the callback;
+- report when tracker search rows are found but every detail is rejected, so a
+  zero-result browser search has a specific diagnostic. Runtime acceptance on
+  the user's Mac is still necessary; keep the PR draft.
