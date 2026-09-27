@@ -925,3 +925,82 @@ Handoff:
 - after CI passes, validate on macOS Sequoia by clicking each of the five visible
   result headers twice and confirming both directions.
 
+### Stage 29 — persist RuTracker authenticated sessions across launches; Kinozal feasibility audit
+
+Runtime problem fixed:
+- Stage 27/28 kept RuTracker cookies only in the process-local QNetworkCookieJar;
+- therefore a successful authenticated session could work until Rats Search was
+  replaced/restarted, then the next build had to perform a fresh login and could
+  hit RuTracker's intermittent Cloudflare/login wall even with unchanged valid
+  credentials;
+- Stage 28 did inherit Stage 27's RuTracker source/auth code byte-for-byte; the
+  regression observed after upgrading was session lifetime, not a lost source
+  integration.
+
+Commits in this stage:
+- `afb6256c2508d669084e8f3fd57deef779012354`
+  `feat: persist RuTracker authenticated session across launches`
+- `89a49575fc5bd18f56460ca21b5f5842e0aea6d9`
+  `fix: restore RuTracker cookies before re-authenticating`
+
+Implemented:
+- RuTracker now persists the authenticated cookie jar per official mirror in the
+  same local RatsSearch QSettings store that already holds its account settings;
+- all cookies issued for the successful session are serialized, not only
+  `bb_session`, so any additional server/Cloudflare cookies received by this
+  client survive an app update/restart as well;
+- sessions are tagged with the configured username and are restored only for
+  that same account;
+- startup and mirror failover first try a restored session and only POST the
+  username/password when no saved session is usable;
+- a restored session is never blindly trusted: tracker.php must still return the
+  real authenticated torrent table; redirect/login-form responses clear that
+  mirror's stale persisted session and trigger one clean re-login;
+- successful login and successful authenticated search both refresh the stored
+  cookie snapshot so server-side cookie rotations survive the next restart;
+- changing credentials deliberately clears all saved RuTracker sessions;
+- Cloudflare/captcha challenges remain explicit provider errors. Persistence
+  avoids unnecessary re-login but does not claim to solve a fresh managed JS
+  challenge that the Qt HTTP stack never cleared.
+
+Security note:
+- persisted cookies are authentication credentials. They currently live in
+  QSettings, consistent with the existing RuTracker password storage from Stage
+  25. A later hardening pass can move both password and session material to
+  macOS Keychain without changing the search protocol.
+
+Kinozal feasibility audit (2026-09-27):
+- current maintained Jackett definitions classify Kinozal as semi-private and
+  use `https://kinozal.me/` and `https://kinozal.guru/`; `.tv` is legacy /
+  temporarily unavailable;
+- current login is still POST `takelogin.php` with `username` + `password`;
+  successful sessions use `uid` + `pass` cookies;
+- browse/search is still `browse.php` in Windows-1251 and exposes exact
+  `details.php?id=<id>` links, title, size, seeders, leechers and date;
+- exact `get_srv_details.php?action=2&id=<id>` returns the info-hash and file
+  list, so exact release identity can be bound without relying on a title-only
+  search result;
+- Kinozal's own current video rules require concrete technical fields such as
+  Quality, Video, Audio, translation/language and subtitles on release pages,
+  so a concrete `details.php?id=<id>` parser can meet Rats Search's rich
+  exact-source information standard rather than degrading it;
+- however current independent tracker code measured Kinozal behind a Cloudflare
+  managed challenge on 2026-09-26: `takelogin.php`, `login.php` and
+  `browse.php` can answer 403/challenge. Reliable automation now needs a
+  browser-earned clearance/session or equivalent browser-capable fallback;
+- therefore Kinozal is technically a good data source but should NOT be added
+  yet as a plain Qt-network provider. Doing so would recreate the silent-zero /
+  intermittent-login failure we just fixed for RuTracker;
+- safe integration plan: first add a reusable authenticated-session/import path
+  capable of using a browser-cleared Kinozal `uid/pass` (+ clearance cookies
+  when required), then implement listing -> exact details.php -> exact
+  get_srv_details hash/files -> rich detail parser. Only emit a Kinozal row
+  after those exact-source checks pass.
+
+Handoff:
+- branch: `stage29-rutracker-session-persistence`;
+- parent: Stage 28 head
+  `ae7b03608edd92c9ebb7dcf018d96944a5558044`;
+- do not merge until macOS ARM CI passes and a restart test confirms that a
+  previously successful RuTracker session continues working without a new login.
+
