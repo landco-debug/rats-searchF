@@ -8,6 +8,52 @@
 #include <QPainterPath>
 #include <QRegularExpression>
 
+namespace {
+
+struct SourceBadgeStyle {
+    QString text;
+    QColor background;
+};
+
+SourceBadgeStyle sourceBadgeStyle(const QString& provider)
+{
+    if (provider == QStringLiteral("rutor"))
+        return { QStringLiteral("R"), QColor(QStringLiteral("#F57C00")) };
+    if (provider == QStringLiteral("rutracker-ru"))
+        return { QStringLiteral("RT"), QColor(QStringLiteral("#2EAD4B")) };
+    if (provider == QStringLiteral("megapeer"))
+        return { QStringLiteral("M"), QColor(QStringLiteral("#1976D2")) };
+    if (provider == QStringLiteral("nnmclub"))
+        return { QStringLiteral("N"), QColor(QStringLiteral("#00838F")) };
+    return {};
+}
+
+void drawSourceBadge(QPainter* painter, const QRect& rect,
+    const QString& provider, bool selected)
+{
+    const SourceBadgeStyle style = sourceBadgeStyle(provider);
+    if (style.text.isEmpty())
+        return;
+
+    painter->save();
+    QColor bg = style.background;
+    if (selected)
+        bg.setAlpha(210);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(bg);
+    painter->drawRoundedRect(rect, 3.0, 3.0);
+
+    QFont font = painter->font();
+    font.setBold(true);
+    font.setPointSize(style.text.size() > 1 ? 6 : 7);
+    painter->setFont(font);
+    painter->setPen(Qt::white);
+    painter->drawText(rect, Qt::AlignCenter, style.text);
+    painter->restore();
+}
+
+} // namespace
+
 TorrentItemDelegate::TorrentItemDelegate(QObject* parent) : QStyledItemDelegate(parent) { }
 
 QColor TorrentItemDelegate::getSeedersColor(int seeders)
@@ -90,11 +136,33 @@ void TorrentItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& o
             nameRect.setHeight(BaseRowHeight - 4);
         }
 
+        int iconLeft = nameRect.left();
+
+        // Optional exact-source mark. These are local vector badges rather than
+        // remotely fetched favicons: they are instantaneous/offline, cannot
+        // disappear when a tracker changes assets, and still identify the
+        // provider at a glance. The row tooltip spells out the full service name.
+        if (showSourceBadges_) {
+            const QString provider
+                = index.data(SearchResultModel::SourceProviderRole).toString();
+            const SourceBadgeStyle badge = sourceBadgeStyle(provider);
+            if (!badge.text.isEmpty()) {
+                const int filesOffset = hasFilePaths ? -3 : 0;
+                QRect badgeRect(iconLeft,
+                    nameRect.top() + filesOffset + borderBottom
+                        + (qMin(nameRect.height(), BaseRowHeight - 4) - 16) / 2,
+                    16, 16);
+                drawSourceBadge(painter, badgeRect, provider,
+                    option.state & QStyle::State_Selected);
+                iconLeft += 20;
+                nameRect.setLeft(iconLeft);
+            }
+        }
+
         // Draw content type icon (emoji glyph from the domain content type)
         rats::domain::ContentType contentType
             = rats::domain::contentTypeFromId(index.data(SearchResultModel::ContentTypeRole).toInt());
         QString typeIcon = rats::ui::contentTypeIcon(contentType);
-        int iconLeft = nameRect.left();
         if (!typeIcon.isEmpty()) {
             const int filesOffset = hasFilePaths ? -3 : 0; // Offset for files as name will be shifted top
             QRect iconRect(iconLeft,

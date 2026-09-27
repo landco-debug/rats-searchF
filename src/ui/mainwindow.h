@@ -239,6 +239,7 @@ private:
     QComboBox* sizeMaxUnit = nullptr;
     QSpinBox* filesMinSpin = nullptr;
     QSpinBox* filesMaxSpin = nullptr;
+    QCheckBox* sourceBadgeCheckBox = nullptr; // show exact-source mark before the type icon
     // Snapshot taken when the popup opens, so closing it only re-runs the
     // search when something actually changed.
     SearchFilters filtersOnOpen_;

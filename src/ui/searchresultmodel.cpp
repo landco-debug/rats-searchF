@@ -9,6 +9,23 @@
 using rats::domain::SearchHit;
 using rats::domain::Torrent;
 
+namespace {
+
+QString sourceDisplayName(const QString& provider)
+{
+    if (provider == QStringLiteral("rutor"))
+        return QStringLiteral("Rutor");
+    if (provider == QStringLiteral("rutracker-ru"))
+        return QStringLiteral("RuTracker.RU");
+    if (provider == QStringLiteral("megapeer"))
+        return QStringLiteral("MegaPeer");
+    if (provider == QStringLiteral("nnmclub"))
+        return QStringLiteral("NNM-Club");
+    return provider;
+}
+
+} // namespace
+
 SearchResultModel::SearchResultModel(QObject* parent) : QAbstractTableModel(parent) { }
 
 SearchResultModel::~SearchResultModel() { }
@@ -66,12 +83,17 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
             return Qt::AlignLeft;
         }
     } else if (role == Qt::ToolTipRole) {
-        QString tip = QString("Info Hash: %1\nSeeders: %2\nLeechers: %3\nSize: %4\nFiles: %5")
-                          .arg(torrent.hash)
-                          .arg(torrent.seeders)
-                          .arg(torrent.leechers)
-                          .arg(rats::ui::formatSize(torrent.size))
-                          .arg(torrent.files);
+        const QString provider = torrent.info
+            .value(QStringLiteral("sourceProvider")).toString();
+        QString tip;
+        if (!provider.isEmpty())
+            tip += tr("Source: %1\n").arg(sourceDisplayName(provider));
+        tip += QString("Info Hash: %1\nSeeders: %2\nLeechers: %3\nSize: %4\nFiles: %5")
+                   .arg(torrent.hash)
+                   .arg(torrent.seeders)
+                   .arg(torrent.leechers)
+                   .arg(rats::ui::formatSize(torrent.size))
+                   .arg(torrent.files);
         // The row is tinted for these; say why, and name the peer it came from.
         if (hit.remote) {
             tip += QLatin1Char('\n')
@@ -89,6 +111,8 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
         return hit.matchingPaths;
     } else if (role == RemoteRole) {
         return hit.remote;
+    } else if (role == SourceProviderRole) {
+        return torrent.info.value(QStringLiteral("sourceProvider")).toString();
     }
 
     return QVariant();

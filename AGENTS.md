@@ -626,3 +626,36 @@ Validation:
   early rejection.
 
 Identity/completeness invariants are unchanged.
+
+
+### Stage 23 — optional exact-source marks in Search Results
+
+Commit message: `feat: show optional source marks on search rows`.
+
+User-visible goal:
+- make it obvious which exact public tracker supplied each torrent without
+  adding another wide table column;
+- allow the marker to be disabled.
+
+Implemented:
+- SearchResultModel exposes `SourceProviderRole` directly from verified
+  `Torrent::info.sourceProvider`;
+- each row tooltip now starts with the full source name (Rutor, RuTracker.RU,
+  MegaPeer or NNM-Club);
+- TorrentItemDelegate can draw a compact 16 px source badge immediately before
+  the existing content-type icon:
+  - R = Rutor
+  - RT = RuTracker.RU
+  - M = MegaPeer
+  - N = NNM-Club
+- badges use distinct tracker-specific colours and stay legible on selected rows;
+- the marks are local vector rendering rather than remote favicons. This avoids
+  extra web requests/privacy leakage and broken icons when a tracker has no
+  stable favicon (Rutor currently does not expose one reliably);
+- Filters popup contains `Show source marks`, enabled by default;
+- the setting is persisted immediately as `search/showSourceMarks`; toggling
+  it only repaints the result table and never re-runs a search;
+- the existing content-type icon remains visible after the provider mark, so
+  source and media type stay separate concepts.
+
+No exact-source search, filtering, de-duplication or download behavior changed.

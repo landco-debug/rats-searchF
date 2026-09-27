@@ -622,6 +622,17 @@ void MainWindow::connectSearchSignals()
             performSearch(currentSearchQuery_);
     });
 
+    connect(sourceBadgeCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        if (torrentDelegate)
+            torrentDelegate->setShowSourceBadges(checked);
+        if (resultsTableView)
+            resultsTableView->viewport()->update();
+
+        QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
+        settings.setValue(QStringLiteral("search/showSourceMarks"), checked);
+        settings.sync();
+    });
+
     connect(resultsTableView->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
         [this](const QModelIndex& current, const QModelIndex&) { onTorrentSelected(current); });
     connect(resultsTableView, &QTableView::doubleClicked, this, &MainWindow::onTorrentDoubleClicked);
@@ -1131,6 +1142,12 @@ void MainWindow::setupSearchFilters()
     };
     form->addRow(tr("Files from:"), makeCountSpin(filesMinSpin));
     form->addRow(tr("Files to:"), makeCountSpin(filesMaxSpin));
+
+    sourceBadgeCheckBox = new QCheckBox(tr("Show source marks"), panel);
+    sourceBadgeCheckBox->setChecked(true);
+    sourceBadgeCheckBox->setToolTip(
+        tr("Show which exact tracker supplied each search result"));
+    form->addRow(QString(), sourceBadgeCheckBox);
 
     QPushButton* resetButton = new QPushButton(tr("Reset filters"), panel);
     // Neutral: the popup has no accept button, so nothing here should read as
@@ -2798,6 +2815,15 @@ void MainWindow::loadSettings()
     if (filesMaxSpin)
         filesMaxSpin->setValue(s.value("filters/filesMax", 0).toInt());
 
+    if (sourceBadgeCheckBox) {
+        const bool showMarks
+            = s.value(QStringLiteral("search/showSourceMarks"), true).toBool();
+        QSignalBlocker block(sourceBadgeCheckBox);
+        sourceBadgeCheckBox->setChecked(showMarks);
+        if (torrentDelegate)
+            torrentDelegate->setShowSourceBadges(showMarks);
+    }
+
     if (tabWidget) {
         const int tab = s.value("tabs/current", 0).toInt();
         if (tab >= 0 && tab < tabWidget->count())
@@ -2845,6 +2871,8 @@ void MainWindow::saveSettings()
         s.setValue("filters/filesMin", filesMinSpin->value());
     if (filesMaxSpin)
         s.setValue("filters/filesMax", filesMaxSpin->value());
+    if (sourceBadgeCheckBox)
+        s.setValue("search/showSourceMarks", sourceBadgeCheckBox->isChecked());
 
     if (tabWidget)
         s.setValue("tabs/current", tabWidget->currentIndex());
