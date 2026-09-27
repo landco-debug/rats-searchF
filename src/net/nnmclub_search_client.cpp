@@ -136,11 +136,6 @@ void NnmClubSearchClient::fetchSearchPage(int generation)
 
             searchResolved_ = true;
             for (const domain::Torrent& torrent : candidates) {
-                if (sourceparse::hasAuthoritativeTypeMismatch(
-                        torrent, currentContentType_)) {
-                    ++rejected_;
-                    continue;
-                }
                 Job job;
                 job.torrent = torrent;
                 job.detailUrl = QUrl(torrent.info

@@ -407,22 +407,6 @@ int contentTypeHintScore(
     return score;
 }
 
-bool hasAuthoritativeTypeMismatch(
-    const domain::Torrent& torrent, const QString& expectedType)
-{
-    const domain::ContentType expected
-        = domain::contentTypeFromString(expectedType.trimmed());
-    if (expected == domain::ContentType::Unknown
-        || torrent.contentType == domain::ContentType::Unknown
-        || torrent.contentType == expected) {
-        return false;
-    }
-
-    return torrent.info
-               .value(QStringLiteral("contentTypeEvidence")).toString()
-        == QStringLiteral("source-category");
-}
-
 void populateTechnicalInfo(domain::Torrent& torrent)
 {
     QJsonObject info = torrent.info;

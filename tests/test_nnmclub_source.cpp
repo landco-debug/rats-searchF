@@ -134,16 +134,12 @@ void TestNnmClubSource::typedSearchHintsPrioritizeBooksSafely()
         "History of Fortifications [PDF, FB2, EPUB]");
     QCOMPARE(rats::net::sourceparse::contentTypeHintScore(
         book, QStringLiteral("books")), 500);
-    QVERIFY(!rats::net::sourceparse::hasAuthoritativeTypeMismatch(
-        book, QStringLiteral("books")));
 
     Torrent explicitVideo;
     explicitVideo.name = QStringLiteral("Manual PDF");
     explicitVideo.contentType = rats::domain::ContentType::Video;
     explicitVideo.info[QStringLiteral("contentTypeEvidence")]
         = QStringLiteral("source-category");
-    QVERIFY(rats::net::sourceparse::hasAuthoritativeTypeMismatch(
-        explicitVideo, QStringLiteral("books")));
     QVERIFY(rats::net::sourceparse::contentTypeHintScore(
         explicitVideo, QStringLiteral("books")) < 0);
 }

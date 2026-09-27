@@ -35,8 +35,6 @@ domain::ContentType contentTypeFromCategoryText(QString category);
 // case that may be rejected before expensive detail/.torrent requests.
 int contentTypeHintScore(
     const domain::Torrent& torrent, const QString& expectedType);
-bool hasAuthoritativeTypeMismatch(
-    const domain::Torrent& torrent, const QString& expectedType);
 
 // Populate the shared Torrent Info fields used by TorrentDetailsPanel:
 // quality, video, audioTracks and subtitles. The full exact-page description

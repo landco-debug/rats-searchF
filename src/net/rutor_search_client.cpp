@@ -167,11 +167,6 @@ void RutorSearchClient::fetchSearchPage(
                 });
 
             for (domain::Torrent& torrent : candidates) {
-                if (sourceparse::hasAuthoritativeTypeMismatch(
-                        torrent, currentContentType_)) {
-                    ++rejected_;
-                    continue;
-                }
                 if (queuedSearchHashes_.contains(torrent.hash))
                     continue;
                 queuedSearchHashes_.insert(torrent.hash);

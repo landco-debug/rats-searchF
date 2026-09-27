@@ -659,3 +659,25 @@ Implemented:
   source and media type stay separate concepts.
 
 No exact-source search, filtering, de-duplication or download behavior changed.
+
+
+### Stage 24 — typed-search optimization is prioritization-only
+
+Commit message: `fix: keep typed search optimization recall-safe`.
+
+Review of Stage 22 tightened the safety guarantee:
+- a source-native category is strong evidence, but our cross-tracker category
+  mapper is intentionally coarse (for example audiobook/library forum names can
+  straddle Audio vs Books);
+- therefore even an apparent category mismatch must not be discarded solely as
+  a latency optimization.
+
+Changed:
+- removed all pre-verification type rejection introduced by Stage 22;
+- source category and title hints now influence queue order only;
+- every candidate remains eligible to proceed through the same exact page,
+  exact .torrent/info-hash and final content-type verification as before;
+- a recognized mismatch receives a low priority score, not a rejection.
+
+Result: typed Books/Audio/etc. should surface likely matches much earlier while
+the optimization cannot reduce recall compared with the pre-Stage-22 search.
