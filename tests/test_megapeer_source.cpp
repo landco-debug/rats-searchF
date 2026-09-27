@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QJsonArray>
 
 #include "domain/content.h"
 #include "net/megapeer_source.h"

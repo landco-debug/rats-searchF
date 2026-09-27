@@ -3,6 +3,7 @@
 #include "net/source_parse_utils.h"
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>

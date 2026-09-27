@@ -5,6 +5,7 @@
 #include <QDate>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>

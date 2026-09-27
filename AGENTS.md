@@ -573,3 +573,20 @@ Fixed:
 
 No search-source scope changed: the combined no-login build remains Rutor +
 public RuTracker.RU + public MegaPeer + public/no-login NNM-Club.
+
+
+### Stage 21 — complete QJsonArray type at strict-source boundaries
+
+Commit message: `fix: include QJsonArray in public source parsers`.
+
+The Stage 19 macOS compiler reached the new source adapters and exposed a
+Qt-specific compile issue hidden by forward declarations: calling
+`QJsonValue::toArray().isEmpty()` requires the full QJsonArray definition.
+
+Fixed:
+- explicitly include QJsonArray in MegaPeerSource and NnmClubSource;
+- explicitly include QJsonArray in their parser tests, which also inspect
+  `audioTracks`;
+- no runtime/search behavior changed.
+
+This is a compile-only follow-up to the combined public-source implementation.
