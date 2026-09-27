@@ -22,11 +22,10 @@ namespace rats::net {
 
 // Authenticated asynchronous RuTracker exact-source client.
 //
-// RuTracker search and topic metadata are account-gated. The client logs in on
-// an official mirror, persists that mirror's cookie session between app
-// launches, and verifies every result on its concrete topic page before
-// emitting it. Official mirrors are tried automatically because reachability
-// differs by ISP.
+// On macOS one persistent WebKit session owns login, Cloudflare clearance,
+// search and exact topic pages. Username/password are not replayed through the
+// unrelated Qt HTTP stack. Other platforms retain the HTTP credential path.
+// Every emitted result is still verified on its concrete topic page.
 class RuTrackerRuSearchClient : public QObject {
     Q_OBJECT
 
@@ -37,6 +36,12 @@ public:
     void setCredentials(const QString& username, const QString& password);
     bool isConfigured() const;
 
+#ifdef __APPLE__
+    // Opens the persistent embedded browser after clearing only RuTracker site
+    // data. This is the deterministic "Authorize / Re-login" action.
+    void reloginInBrowser();
+#endif
+
     void search(const QString& query, int limit = 50,
         const QString& sortKey = QStringLiteral("seeders_desc"),
         const QString& contentType = QString());
@@ -46,6 +51,9 @@ signals:
     void resultReady(const QString& query, const rats::domain::Torrent& torrent);
     void searchFinished(
         const QString& query, int accepted, int rejected, const QString& error);
+#ifdef __APPLE__
+    void browserAuthorizationChanged(bool authorized, const QString& message);
+#endif
 
 private:
     struct DetailJob {
