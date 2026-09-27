@@ -1294,6 +1294,10 @@ Commits in this stage:
   `fix: preserve full RuTracker titles with nested markup`
 - `ddaa0ae36e2a364dc09cd07af197d9f29af40277`
   `test: reproduce truncated RuTracker nested topic titles`
+- `b8ef1513973ac2354654dd573ae6f2b617f154c5`
+  `fix: heal stored names from authoritative source titles`
+- `a6281bc8ffb82771dcc96db82d2c7a0e1afc6327`
+  `test: repair previously stored truncated exact-source names`
 
 Implemented:
 - added a dedicated DOM-like `elementTextById()` extractor that finds the
@@ -1303,6 +1307,9 @@ Implemented:
   only after the whole element body has been captured;
 - a detail-page title is no longer allowed to replace an already complete
   search-row title with a suspiciously shorter value;
+- authoritative exact-source reinsertion now also refreshes the stored torrent
+  name, so RT rows already poisoned by an older truncated title heal on the next
+  search instead of remaining truncated in the local index;
 - exact source URL, topic ID, magnet/info-hash verification and all metadata
   enrichment remain unchanged.
 
@@ -1311,6 +1318,9 @@ Regression coverage:
 - asserts that the final torrent name is the complete
   `Багровый прилив / Crimson Tide (1995) BDRip 1080p`, never just
   `Багровый`.
+- the Manticore integration test starts with a previously stored exact-source
+  row named only `Багровый`, reinserts the verified full title, and asserts
+  that the persisted/searchable row is repaired.
 
 Handoff:
 - branch: `stage34-rutracker-full-titles`;
