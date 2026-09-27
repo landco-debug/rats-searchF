@@ -32,6 +32,32 @@ QString firstMatch(const QString& text, const QString& pattern)
     return match.hasMatch() ? match.captured(1).trimmed() : QString();
 }
 
+QString elementTextById(const QString& html, const QString& id)
+{
+    const QRegularExpression openRe(
+        QStringLiteral(
+            R"(<([A-Za-z][A-Za-z0-9]*)\b[^>]*\bid\s*=\s*["']%1["'][^>]*>)")
+            .arg(QRegularExpression::escape(id)),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch open = openRe.match(html);
+    if (!open.hasMatch())
+        return QString();
+
+    const QString tag = open.captured(1);
+    const QRegularExpression closeRe(
+        QStringLiteral(R"(</%1\s*>)")
+            .arg(QRegularExpression::escape(tag)),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch close = closeRe.match(html, open.capturedEnd());
+    if (!close.hasMatch())
+        return QString();
+
+    return sourceparse::stripHtml(
+        html.mid(open.capturedEnd(), close.capturedStart() - open.capturedEnd()))
+        .trimmed();
+}
+
+
 int firstInteger(const QString& text)
 {
     const QRegularExpression number(QStringLiteral(R"((\d+))"));
@@ -380,11 +406,18 @@ bool RuTrackerRuSource::applyDetailPage(
         return false;
     torrent.hash = hash;
 
-    const QString title = firstMatch(html,
-        QStringLiteral(
-            R"(<[^>]*id\s*=\s*["']topic-title["'][^>]*>(.*?)</[^>]+>)"));
-    if (!title.isEmpty())
-        torrent.name = sourceparse::stripHtml(title);
+    // topic-title can contain nested markup (for example highlighted or
+    // styled words). The old generic "</[^>]+>" terminator stopped at the
+    // first nested closing tag and reduced names such as "Багровый прилив …"
+    // to just "Багровый". Extract the full element by matching its own closing
+    // tag, and never replace an already complete search-row title with a
+    // suspiciously shorter detail-page value.
+    const QString detailTitle = elementTextById(
+        html, QStringLiteral("topic-title"));
+    if (!detailTitle.isEmpty()
+        && (torrent.name.isEmpty() || detailTitle.size() >= torrent.name.size())) {
+        torrent.name = detailTitle;
+    }
 
     QString postHtml = firstPostBody(html);
     if (postHtml.isEmpty())
