@@ -133,15 +133,17 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
     d_->rutorSearch = std::make_unique<net::RutorSearchClient>();
     d_->ruTrackerRuSearch = std::make_unique<net::RuTrackerRuSearchClient>();
+#ifndef __APPLE__
     {
-        // Tracker credentials are GUI preferences rather than part of rats.json:
-        // the latter is exposed through config.get/config.set and must not leak
-        // account secrets through the REST API.
+        // Non-macOS builds still use the legacy HTTP credential path. macOS
+        // uses one persistent WebKit session and intentionally stores no
+        // RuTracker username/password in application preferences.
         QSettings settings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
         d_->ruTrackerRuSearch->setCredentials(
             settings.value(QStringLiteral("rutracker/username")).toString(),
             settings.value(QStringLiteral("rutracker/password")).toString());
     }
+#endif
     d_->megaPeerSearch = std::make_unique<net::MegaPeerSearchClient>();
     d_->nnmClubSearch = std::make_unique<net::NnmClubSearchClient>();
 
