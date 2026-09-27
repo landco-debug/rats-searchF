@@ -41,6 +41,10 @@ add_rats_test(test_database_dump)
 add_rats_test(test_database_snapshot)
 add_rats_test(test_database_transfer_resume)
 add_rats_test(test_voting_record)
+add_rats_test(test_rutor_source)
+add_rats_test(test_rutracker_ru_source)
+add_rats_test(test_megapeer_source)
+add_rats_test(test_nnmclub_source)
 
 # The single-instance guard lives in src/bootstrap (executable-only, not in
 # ratscore), so its source is compiled straight into the test.
@@ -48,7 +52,7 @@ add_rats_test(test_single_instance ${CMAKE_SOURCE_DIR}/src/bootstrap/single_inst
 
 # The theme lives in src/ui (executable-only, not in ratscore) and reads its
 # stylesheet template and token tables out of the Qt resources, so both the
-# source and the qrc are compiled straight into this test.
+# source and the qrc are compiled straight into this test executable (CMAKE_AUTORCC is ON globally).
 add_rats_test(test_theme
     ${CMAKE_SOURCE_DIR}/src/ui/theme.cpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
@@ -122,6 +126,10 @@ add_custom_target(check
             test_manticore_maintenance
             test_database_dump
             test_voting_record
+            test_rutor_source
+            test_rutracker_ru_source
+            test_megapeer_source
+            test_nnmclub_source
             test_single_instance
             test_theme
     COMMENT "Running all tests..."
