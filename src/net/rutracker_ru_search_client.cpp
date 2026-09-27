@@ -253,20 +253,10 @@ bool RuTrackerRuSearchClient::tryNextMirror(
     lastMirrorError_ = reason;
     const int next = mirrorIndex_ + 1;
     if (next >= mirrorBaseUrls_.size()) {
-#ifdef __APPLE__
-        // Keep all subsequent requests in WebKit. Moving only cookies back to
-        // QNetworkAccessManager would lose the browser's network fingerprint.
-        browserMode_ = true;
-        if (!browser_)
-            browser_ = std::make_unique<RuTrackerBrowser>();
-        fetchSearchPage(generation);
-        return true;
-#else
         finishNow(generation,
             tr("RuTracker failed on all official mirrors. Last error: %1")
                 .arg(reason));
         return false;
-#endif
     }
 
     mirrorIndex_ = next;
@@ -339,12 +329,17 @@ void RuTrackerRuSearchClient::reloginInBrowser()
     if (!browser_)
         browser_ = std::make_unique<RuTrackerBrowser>();
 
+    const int generation = generation_;
     emit browserAuthorizationChanged(false, tr("Clearing RuTracker browser session…"));
-    browser_->clearSession([this]() {
+    browser_->clearSession([this, generation]() {
+        if (generation != generation_)
+            return;
         const QUrl loginUrl = urlOnActiveMirror(QStringLiteral("/forum/login.php"));
         emit browserAuthorizationChanged(false, tr("Complete authorization in the RuTracker window."));
         browser_->authorize(loginUrl,
-            [this](const QByteArray&, const QUrl&, const QString& error) {
+            [this, generation](const QByteArray&, const QUrl&, const QString& error) {
+                if (generation != generation_)
+                    return;
                 if (!error.isEmpty()) {
                     emit browserAuthorizationChanged(false,
                         tr("RuTracker authorization failed: %1").arg(error));
