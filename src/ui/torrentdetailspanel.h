@@ -119,8 +119,8 @@ private:
     QPushButton* copyHashButton_;
     QPushButton* closeButton_;
 
-    // Rich information resolver. Verified Rutor source-first rows are terminal:
-    // their stored exact release snapshot is rendered directly and no post-hoc
+    // Rich information resolver. Verified source-first rows (Rutor/RuTracker.RU)
+    // are terminal: their stored exact release snapshot is rendered directly and no post-hoc
     // lookup runs. Legacy/non-verified rows retain the old tracker/peer/public-
     // index/DHT fallback chain.
     void requestTrackerRefresh();

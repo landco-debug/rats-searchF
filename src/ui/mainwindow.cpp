@@ -31,6 +31,7 @@
 #include "net/crawler.h"
 #include "net/p2p_transport.h"
 #include "net/rutor_search_client.h"
+#include "net/rutracker_ru_search_client.h"
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
 #include "services/database_sync_service.h"
@@ -810,82 +811,30 @@ void MainWindow::connectServiceSignals()
 
 void MainWindow::connectPeerSignals()
 {
-    // Strict source-first search results. Nothing reaches the table until the
-    // Rutor client has re-verified the concrete detail page against the exact
-    // info-hash and passed the release-completeness rule.
+    // Source-first discovery only. Both clients emit a Torrent only after their
+    // concrete tracker page has re-proved the exact info-hash and passed the
+    // strict rich-release completeness rule.
     if (auto* source = app_->rutorSearch()) {
         connect(source, &rats::net::RutorSearchClient::resultReady, this,
-            [this](const QString& query, const Torrent& incoming) {
-                if (query != currentSearchQuery_)
-                    return;
-                if (!incoming.info.value(QStringLiteral("sourceVerified")).toBool(false)
-                    || !incoming.info.value(QStringLiteral("strictComplete")).toBool(false)
-                    || incoming.info.value(QStringLiteral("sourceUrl")).toString().isEmpty()) {
-                    return;
-                }
-
-                Torrent torrent = incoming;
-                if (app_->indexing()) {
-                    const auto inserted = app_->indexing()->insert(incoming);
-                    if (!inserted.success)
-                        return;
-                    torrent = inserted.torrent;
-                }
-
-                // Apply the existing UI filters after classification/persistence.
-                const SearchFilters filters = currentSearchFilters();
-                if ((filters.sizeMin > 0 || filters.sizeMax > 0) && torrent.size <= 0)
-                    return;
-                if (filters.sizeMin > 0 && torrent.size < filters.sizeMin)
-                    return;
-                if (filters.sizeMax > 0 && torrent.size > filters.sizeMax)
-                    return;
-
-                if ((filters.filesMin > 0 || filters.filesMax > 0) && torrent.files <= 0)
-                    return;
-                if (filters.filesMin > 0 && torrent.files < filters.filesMin)
-                    return;
-                if (filters.filesMax > 0 && torrent.files > filters.filesMax)
-                    return;
-
-                const QString wantedType = typeComboBox->currentData().toString();
-                if (!wantedType.isEmpty()
-                    && rats::domain::toString(torrent.contentType).compare(
-                           wantedType, Qt::CaseInsensitive)
-                        != 0) {
-                    return;
-                }
-                if (safeSearchCheckBox->isChecked()
-                    && torrent.contentCategory == rats::domain::ContentCategory::XXX) {
-                    return;
-                }
-
-                SearchHit hit;
-                hit.torrent = torrent;
-                searchResultModel->addResult(hit);
-                showStatusMessage(
-                    tr("✅ Verified Rutor releases: %1")
-                        .arg(searchResultModel->resultCount()),
-                    1500);
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
             });
-
         connect(source, &rats::net::RutorSearchClient::searchFinished, this,
             [this](const QString& query, int accepted, int rejected, const QString& error) {
-                if (query != currentSearchQuery_)
-                    return;
-
-                const int visible = searchResultModel->resultCount();
-                if (!error.isEmpty() && visible == 0) {
-                    showStatusMessage(tr("⚠️ %1").arg(error), 5000);
-                    return;
-                }
-
-                showStatusMessage(
-                    tr("✅ Verified: %1 · hidden incomplete/unverified: %2")
-                        .arg(visible)
-                        .arg(rejected),
-                    5000);
                 Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("Rutor"), rejected, error);
+            });
+    }
+
+    if (auto* source = app_->ruTrackerRuSearch()) {
+        connect(source, &rats::net::RuTrackerRuSearchClient::resultReady, this,
+            [this](const QString& query, const Torrent& torrent) {
+                addVerifiedSourceResult(query, torrent);
+            });
+        connect(source, &rats::net::RuTrackerRuSearchClient::searchFinished, this,
+            [this](const QString& query, int accepted, int rejected, const QString& error) {
+                Q_UNUSED(accepted);
+                finishStrictSource(query, QStringLiteral("RuTracker.RU"), rejected, error);
             });
     }
 
@@ -910,6 +859,105 @@ void MainWindow::connectPeerSignals()
                 verticalSplitter->setSizes({ 600, 200 });
             }
         });
+}
+
+void MainWindow::addVerifiedSourceResult(
+    const QString& query, const Torrent& incoming)
+{
+    if (query != currentSearchQuery_)
+        return;
+
+    const QJsonObject& info = incoming.info;
+    if (!info.value(QStringLiteral("sourceVerified")).toBool(false)
+        || !info.value(QStringLiteral("strictComplete")).toBool(false)
+        || info.value(QStringLiteral("sourceUrl")).toString().isEmpty()) {
+        return;
+    }
+
+    // The same BitTorrent payload may be published on both Rutor and
+    // RuTracker.RU. The info-hash is the identity, so show/index it once per
+    // search rather than presenting duplicate rows with different source URLs.
+    if (strictSearchHashes_.contains(incoming.hash))
+        return;
+
+    Torrent torrent = incoming;
+    if (app_->indexing()) {
+        const auto inserted = app_->indexing()->insert(incoming);
+        if (!inserted.success)
+            return;
+        torrent = inserted.torrent;
+    }
+
+    const SearchFilters filters = currentSearchFilters();
+    if ((filters.sizeMin > 0 || filters.sizeMax > 0) && torrent.size <= 0)
+        return;
+    if (filters.sizeMin > 0 && torrent.size < filters.sizeMin)
+        return;
+    if (filters.sizeMax > 0 && torrent.size > filters.sizeMax)
+        return;
+
+    if ((filters.filesMin > 0 || filters.filesMax > 0) && torrent.files <= 0)
+        return;
+    if (filters.filesMin > 0 && torrent.files < filters.filesMin)
+        return;
+    if (filters.filesMax > 0 && torrent.files > filters.filesMax)
+        return;
+
+    const QString wantedType = typeComboBox->currentData().toString();
+    if (!wantedType.isEmpty()
+        && rats::domain::toString(torrent.contentType).compare(
+               wantedType, Qt::CaseInsensitive)
+            != 0) {
+        return;
+    }
+    if (safeSearchCheckBox->isChecked()
+        && torrent.contentCategory == rats::domain::ContentCategory::XXX) {
+        return;
+    }
+
+    strictSearchHashes_.insert(incoming.hash);
+
+    SearchHit hit;
+    hit.torrent = torrent;
+    searchResultModel->addResult(hit);
+    showStatusMessage(
+        tr("✅ Verified releases: %1").arg(searchResultModel->resultCount()),
+        1500);
+}
+
+void MainWindow::finishStrictSource(
+    const QString& query, const QString& provider, int rejected,
+    const QString& error)
+{
+    if (query != currentSearchQuery_)
+        return;
+
+    strictSourcesRejected_ += qMax(0, rejected);
+    if (!error.isEmpty())
+        strictSourceErrors_ << provider + QStringLiteral(": ") + error;
+
+    if (strictSourcesPending_ > 0)
+        --strictSourcesPending_;
+    if (strictSourcesPending_ > 0)
+        return;
+
+    const int visible = searchResultModel->resultCount();
+    if (visible == 0 && !strictSourceErrors_.isEmpty()) {
+        showStatusMessage(
+            tr("⚠️ Source search failed: %1")
+                .arg(strictSourceErrors_.join(QStringLiteral(" · "))),
+            7000);
+        return;
+    }
+
+    QString message = tr("✅ Verified: %1 · hidden incomplete/unverified: %2")
+                          .arg(visible)
+                          .arg(strictSourcesRejected_);
+    if (!strictSourceErrors_.isEmpty()) {
+        message += tr(" · unavailable: %1")
+                       .arg(strictSourceErrors_.join(QStringLiteral(" · ")));
+    }
+    showStatusMessage(message, 6000);
 }
 
 // --- Search filters (size / file-count ranges) ------------------------------
@@ -1083,22 +1131,38 @@ void MainWindow::performSearch(const QString& query)
     if (app_->searchHistory())
         app_->searchHistory()->add(trimmed);
 
-    qInfo() << "Strict Rutor search started:" << trimmed.left(80);
+    qInfo() << "Strict multi-source search started:" << trimmed.left(80);
     tabWidget->setCurrentIndex(0);
     searchResultModel->clearResults();
-    showStatusMessage(tr("🔍 Searching exact Rutor releases…"), 0);
+    strictSearchHashes_.clear();
+    strictSourcesRejected_ = 0;
+    strictSourceErrors_.clear();
+    strictSourcesPending_ = 0;
 
-    auto* source = app_->rutorSearch();
-    if (!source) {
+    auto* rutor = app_->rutorSearch();
+    auto* rutracker = app_->ruTrackerRuSearch();
+    if (rutor)
+        ++strictSourcesPending_;
+    if (rutracker)
+        ++strictSourcesPending_;
+
+    if (strictSourcesPending_ == 0) {
         showStatusMessage(
-            tr("⚠️ Exact-source Rutor search is unavailable in this build."), 5000);
+            tr("⚠️ Exact-source search is unavailable in this build."), 5000);
         return;
     }
 
-    // This is deliberately the ONLY discovery path for the Search Results tab.
-    // Local-index, remote P2P search and DHT-only hits cannot enter the table:
-    // they do not prove a concrete human-facing release page.
-    source->search(trimmed, 50, sortComboBox->currentData().toString());
+    showStatusMessage(
+        tr("🔍 Searching verified releases on Rutor + RuTracker.RU…"), 0);
+
+    // These are deliberately the ONLY discovery sources for Search Results.
+    // Local index, P2P search and DHT-only hits cannot enter this table because
+    // they do not prove a concrete release page.
+    const QString sortKey = sortComboBox->currentData().toString();
+    if (rutor)
+        rutor->search(trimmed, 50, sortKey);
+    if (rutracker)
+        rutracker->search(trimmed, 50, sortKey);
 }
 
 void MainWindow::updateStatusBar()

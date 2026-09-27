@@ -7,6 +7,8 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMainWindow>
+#include <QSet>
+#include <QStringList>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
@@ -122,6 +124,9 @@ private:
     void connectServiceSignals(); // transport / repository / indexing / peers
     void connectPeerSignals(); // remote P2P results streamed into the UI
     void performSearch(const QString& query);
+    void addVerifiedSourceResult(const QString& query, const rats::domain::Torrent& torrent);
+    void finishStrictSource(
+        const QString& query, const QString& provider, int rejected, const QString& error);
 
     // Size / file-count ranges from the "Filters" popup. 0 is "no bound" on
     // every field — the shape both TorrentRepository and the P2P wire expect.
@@ -256,6 +261,10 @@ private:
 
     // State
     QString currentSearchQuery_;
+    QSet<QString> strictSearchHashes_;
+    int strictSourcesPending_ = 0;
+    int strictSourcesRejected_ = 0;
+    QStringList strictSourceErrors_;
     qint64 cachedTorrentCount_ = 0; // Local torrent count (from statistics)
     qint64 cachedRemoteTorrentCount_ = 0; // Sum of torrents advertised by peers
     // Last torrent selected in each non-search tab, so switching tabs can

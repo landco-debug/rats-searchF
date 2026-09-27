@@ -35,27 +35,55 @@ using rats::domain::ContentType;
 
 namespace {
 
-QUrl verifiedRutorSourceUrl(const QJsonObject& info)
+QUrl verifiedExactSourceUrl(const QJsonObject& info)
 {
-    if (info.value(QStringLiteral("sourceProvider")).toString() != QStringLiteral("rutor"))
-        return {};
     if (!info.value(QStringLiteral("sourceVerified")).toBool(false))
         return {};
 
+    const QString provider
+        = info.value(QStringLiteral("sourceProvider")).toString();
     const QUrl url(info.value(QStringLiteral("sourceUrl")).toString());
-    if (!url.isValid() || (url.scheme() != QStringLiteral("https") && url.scheme() != QStringLiteral("http")))
+    if (!url.isValid()
+        || (url.scheme() != QStringLiteral("https")
+            && url.scheme() != QStringLiteral("http"))) {
         return {};
-    if (url.host().compare(QStringLiteral("rutor.info"), Qt::CaseInsensitive) != 0
-        && url.host().compare(QStringLiteral("rutor.is"), Qt::CaseInsensitive) != 0)
-        return {};
-    if (!url.path().startsWith(QStringLiteral("/torrent/")))
-        return {};
-    return url;
+    }
+
+    if (provider == QStringLiteral("rutor")) {
+        const bool hostOk
+            = url.host().compare(QStringLiteral("rutor.info"), Qt::CaseInsensitive) == 0
+            || url.host().compare(QStringLiteral("rutor.is"), Qt::CaseInsensitive) == 0;
+        if (!hostOk || !url.path().startsWith(QStringLiteral("/torrent/")))
+            return {};
+        return url;
+    }
+
+    if (provider == QStringLiteral("rutracker-ru")) {
+        if (url.host().compare(
+                QStringLiteral("rutracker.ru"), Qt::CaseInsensitive) != 0
+            || !url.path().endsWith(QStringLiteral("/viewtopic.php"))) {
+            return {};
+        }
+        return url;
+    }
+
+    return {};
 }
 
-bool isVerifiedRutorInfo(const QJsonObject& info)
+QString exactSourceDisplayName(const QJsonObject& info)
 {
-    return verifiedRutorSourceUrl(info).isValid();
+    const QString provider
+        = info.value(QStringLiteral("sourceProvider")).toString();
+    if (provider == QStringLiteral("rutor"))
+        return QStringLiteral("Rutor");
+    if (provider == QStringLiteral("rutracker-ru"))
+        return QStringLiteral("RuTracker.RU");
+    return QString();
+}
+
+bool isVerifiedExactSourceInfo(const QJsonObject& info)
+{
+    return verifiedExactSourceUrl(info).isValid();
 }
 
 QStringList jsonStringList(const QJsonArray& values)
@@ -527,8 +555,8 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
 
     // Info
     sizeLabel_->setText(rats::ui::formatSize(torrent.size));
-    const bool exactRutor = isVerifiedRutorInfo(torrent.info);
-    filesLabel_->setText(exactRutor && torrent.files == 0
+    const bool exactSource = isVerifiedExactSourceInfo(torrent.info);
+    filesLabel_->setText(exactSource && torrent.files == 0
             ? QStringLiteral("-")
             : tr("%n file(s)", nullptr, torrent.files));
     dateLabel_->setText(torrent.added.isValid() ? torrent.added.toString("MMMM d, yyyy") : "-");
@@ -910,11 +938,11 @@ void TorrentDetailsPanel::requestTrackerRefresh()
 
     auto* trackers = app_->trackers();
 
-    // A verified Rutor record already carries the concrete release page that
-    // produced this exact info-hash. It is terminal for rich-info resolution:
+    // A verified source-first record already carries the concrete release page
+    // that produced this exact info-hash. It is terminal for rich-info resolution:
     // refresh swarm counts if possible, but never launch the old title/hash
     // fallback chain (RuTracker/Nyaa, peers, Magnetz, DHT) for this row.
-    if (isVerifiedRutorInfo(currentTorrent_.info)) {
+    if (isVerifiedExactSourceInfo(currentTorrent_.info)) {
         if (trackers)
             trackers->checkCounts(currentHash_);
         infoResolved_ = true;
@@ -1282,14 +1310,18 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
     trackerInfoLoadingLabel_->hide();
     retryInfoButton_->hide();
 
-    const QUrl exactRutorUrl = verifiedRutorSourceUrl(info);
-    const bool exactRutor = exactRutorUrl.isValid();
+    const QUrl exactSourceUrl = verifiedExactSourceUrl(info);
+    const bool exactSource = exactSourceUrl.isValid();
 
-    if (exactRutor) {
+    if (exactSource) {
+        const QString sourceName = exactSourceDisplayName(info);
         const int topicId = info.value(QStringLiteral("sourceTopicId")).toInt();
         trackerInfoSourceLabel_->setText(topicId > 0
-                ? tr("Source: Rutor · exact release #%1 · info hash verified").arg(topicId)
-                : tr("Source: Rutor · exact release page · info hash verified"));
+                ? tr("Source: %1 · exact release #%2 · info hash verified")
+                      .arg(sourceName)
+                      .arg(topicId)
+                : tr("Source: %1 · exact release page · info hash verified")
+                      .arg(sourceName));
         trackerInfoSourceLabel_->show();
 
         QStringList facts;
@@ -1310,7 +1342,7 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         if (!subtitles.isEmpty())
             facts << tr("Subtitles: %1").arg(subtitles);
 
-        facts << tr("Exact release page: %1").arg(exactRutorUrl.toString());
+        facts << tr("Exact release page: %1").arg(exactSourceUrl.toString());
         trackerUrlsLabel_->setText(facts.join(QLatin1Char('\n')));
         trackerUrlsLabel_->show();
     } else {
@@ -1337,7 +1369,7 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         }
     }
 
-    // Poster image. Exact Rutor snapshots currently do not invent a poster; one
+    // Poster image. Exact source snapshots never invent a poster; one
     // is shown only when the stored snapshot actually contains a concrete URL.
     const QString posterUrl = info.value(QStringLiteral("poster")).toString();
     if (!posterUrl.isEmpty())
@@ -1347,12 +1379,12 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
 
     // The exact-source description is the text captured from that concrete
     // release page. Legacy metadata annotations are appended only for old
-    // fallback records, never to a verified Rutor snapshot.
+    // fallback records, never to a verified source-first snapshot.
     QString description = info.value(QStringLiteral("description")).toString();
     if (description.isEmpty())
         description = info.value(QStringLiteral("metadataNote")).toString();
 
-    if (!exactRutor) {
+    if (!exactSource) {
         QStringList metadataDetails;
         const QString createdBy = info.value("createdBy").toString();
         if (!createdBy.isEmpty())
@@ -1404,16 +1436,18 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
 
     bool hasLinks = false;
 
-    if (exactRutor) {
+    if (exactSource) {
         // This is the only web link shown for a verified-source result. It is
         // the concrete page captured together with this torrent's info-hash,
         // not a search-by-title shortcut.
-        QPushButton* sourceBtn = new QPushButton(tr("🔗 Open exact Rutor release"));
+        const QString sourceName = exactSourceDisplayName(info);
+        QPushButton* sourceBtn
+            = new QPushButton(tr("🔗 Open exact %1 release").arg(sourceName));
         sourceBtn->setObjectName("trackerLinkButton");
         sourceBtn->setCursor(Qt::PointingHandCursor);
-        sourceBtn->setToolTip(exactRutorUrl.toString());
-        connect(sourceBtn, &QPushButton::clicked, this, [exactRutorUrl]() {
-            QDesktopServices::openUrl(exactRutorUrl);
+        sourceBtn->setToolTip(exactSourceUrl.toString());
+        connect(sourceBtn, &QPushButton::clicked, this, [exactSourceUrl]() {
+            QDesktopServices::openUrl(exactSourceUrl);
         });
         trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, sourceBtn);
         hasLinks = true;

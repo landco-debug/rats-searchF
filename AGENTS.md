@@ -275,3 +275,28 @@ Still intentionally unchanged:
 
 Next stage:
 - aggregate both strict clients in Search Results, deduplicate by info-hash, keep source provenance, and generalize exact-source details rendering to Rutor + RuTracker.RU.
+
+
+### Stage 12 — aggregate Rutor + RuTracker.RU in Search Results
+
+Commit message: `feat: search Rutor and RuTracker.RU exact releases`.
+
+Implemented:
+- Search Results launches Rutor and public RuTracker.RU strict clients for the same query/sort;
+- both providers must still pass `sourceVerified=true`, `strictComplete=true` and carry a concrete `sourceUrl`;
+- same info-hash is deduplicated across providers before indexing/display;
+- combined completion status waits for both providers and reports provider-specific failures without discarding successful results from the other source;
+- local-index/P2P/DHT-only discovery remains excluded from Search Results;
+- Torrent Details now recognizes both exact-source contracts:
+  - Rutor: `rutor.info|rutor.is/torrent/...`;
+  - RuTracker.RU: `rutracker.ru/viewtopic.php?t=...`;
+- source label and exact-release button are provider-specific; no legacy guessed links are mixed into a verified-source row.
+
+Important:
+- RuTracker.RU is public and needs no account in this implementation.
+- Semi-private sources (Kinozal/Rustorka/etc.) are NOT silently enabled; they require explicit credential/settings work.
+- MegaPeer/NewStudio are also not yet enabled because their search rows do not expose an info-hash directly; exact identity must be derived from their torrent/detail payload first rather than weakened to title matching.
+
+Next stage:
+- macOS ARM runtime validation of Rutor + RuTracker.RU;
+- then add the next public source only if its exact info-hash can be proven from the concrete release payload.
