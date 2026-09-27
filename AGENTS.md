@@ -1182,3 +1182,97 @@ Handoff:
   now `rows > 1` and `topicLinks > 0`, followed by parsed candidates > 0 and
   at least one RT result after exact detail verification.
 
+### Stage 33 — one RuTracker session on macOS: WebKit-only auth/search/details
+
+Why this stage exists:
+- Stage 32 still produced no visible RT rows on the user's Mac;
+- the settings UI still showed a saved RuTracker username/password even though
+  successful authorization was happening in the embedded WebKit browser;
+- inspection confirmed two independent auth stacks were coexisting on macOS:
+  QNetworkAccessManager + QSettings credentials/cookies, and a persistent
+  WKWebView data store used as a Cloudflare/browser fallback;
+- this made it unclear which session search was actually using and allowed a
+  successful browser login to coexist with an unrelated HTTP credential state;
+- replacing or "clean installing" the .app did not clear those fields because
+  QSettings lives outside the application bundle.
+
+Architecture chosen:
+- on macOS, RuTracker now has exactly one transport/session: persistent WebKit;
+- the same WKWebsiteDataStore owns login, Cloudflare clearance, tracker search
+  and exact viewtopic pages;
+- no RuTracker username/password is loaded, saved or replayed through Qt HTTP on
+  macOS;
+- non-macOS keeps the existing HTTP credential path for now.
+
+Commits in this stage:
+- `4a0edc4a4d775b7b7ed4dd413375c96e8841bb78`
+  `refactor: make WebKit own the macOS RuTracker session`
+- `a2a2d03eb0ffdb58b3e401b2a2a8bf991b3798dc`
+  `feat: add persistent browser authorize and re-login flow`
+- `ec8b5668c10e78f3e81bd60bcef48ab0e98d9223`
+  `api: expose browser-only RuTracker re-login on macOS`
+- `566b218f5f7cc2c5d40bb29eecd86e52490ccc0f`
+  `refactor: make macOS RuTracker search browser-only`
+- `f77b300fd9ab459db72d5e8fcc293f27b72239f8`
+  `cleanup: stop loading RuTracker passwords on macOS`
+- `c7c8dadfea959e3a95f7c9f085221443b2f47068`
+  `ui: model RuTracker settings as browser session on macOS`
+- `fc54c62ca14f23eebc975fec06a0424409ede992`
+  `ui: replace macOS RuTracker password fields with browser session controls`
+- `bc49471d8fad1e065f366c7f9a08ca8c941cf9fc`
+  `fix: terminate browser mirror failover and guard re-login generation`
+
+Implemented:
+- the macOS client constructs WebKit immediately and enters browser mode
+  permanently for RuTracker search;
+- search no longer requires `rutracker/username` or `rutracker/password`;
+- old plaintext RuTracker username/password preferences and old Qt-cookie
+  snapshots are deleted on first launch of this stage;
+- browser search that encounters a real login page keeps that same WebKit window
+  interactive, and retries the tracker search after the authenticated DOM marker
+  appears;
+- exact topic verification also stays in WebKit, so no browser cookie or
+  Cloudflare clearance is copied into QNetworkAccessManager;
+- official mirror failover remains available inside WebKit and now terminates
+  cleanly after all mirrors fail instead of looping;
+- Settings > Indexer on macOS no longer displays username/password fields;
+- it now explains the persistent browser-session model, shows session messages,
+  and exposes one deterministic `Authorize / Re-login` action;
+- that action removes only RuTracker website data from the app's WebKit store,
+  opens a fresh embedded login page, and reports success when the logged-in DOM
+  marker appears;
+- asynchronous re-login callbacks are generation-guarded so a later search or
+  cancellation cannot revive a stale authorization flow.
+
+Important persistence behavior:
+- WebKit uses `WKWebsiteDataStore.defaultDataStore`, so a successful embedded
+  RuTracker session survives normal application replacement/update;
+- deleting Rats Search.app alone does not clear the WebKit store or generic
+  QSettings data; Stage 33 explicitly migrates away the obsolete RuTracker
+  credential keys itself.
+
+Search/data invariants preserved:
+- Stage 32's current minimal `tracker.php?nm=<query>` request remains;
+- source row identity still comes from exact topic URL / data-topic_id, never
+  presentation row numbers;
+- every emitted RT result still requires exact topic-page magnet/info-hash and
+  release-specific metadata;
+- result-table sorting and all Rutor/NNM/MegaPeer code are untouched.
+
+Runtime acceptance:
+1. install Stage 33 over the previous build;
+2. Settings > Indexer must show `RuTracker browser session`, not username and
+   password fields;
+3. click `Authorize / Re-login` once and complete login in the embedded window;
+4. search `терминатор`;
+5. expected diagnostics: real tracker table with topicLinks > 0, parsed
+   candidates > 0, then at least one RT result after exact detail verification;
+6. quit and relaunch; repeat the search without re-entering credentials. The
+   WebKit session should persist.
+
+Handoff:
+- branch: `stage33-rutracker-browser-only`;
+- parent: Stage 32 head
+  `911d5c985218ff04b963bf7beab5150051c12f2a`;
+- keep the PR draft until macOS runtime acceptance.
+
