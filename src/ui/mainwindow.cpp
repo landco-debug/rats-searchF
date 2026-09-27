@@ -1061,7 +1061,10 @@ void MainWindow::finishStrictSource(
                           .arg(visible)
                           .arg(strictSourcesRejected_);
     if (!strictSourceErrors_.isEmpty()) {
-        message += tr(" · unavailable: %1")
+        // A provider may have returned useful verified rows and still report
+        // partial rate-limit/challenge failures. Do not mislabel that as wholly
+        // unavailable; keep the issue visible without discarding good results.
+        message += tr(" · source issues: %1")
                        .arg(strictSourceErrors_.join(QStringLiteral(" · ")));
     }
     showStatusMessage(message, 6000);
@@ -1830,9 +1833,10 @@ void MainWindow::requestTorrentFiles(const Torrent& torrent)
         return;
     }
 
-    // RuTracker.RU public search provides exact topic+magnet provenance but no
-    // stable direct .torrent URL. BEP 9 is still exact: metadata is addressed by
-    // this already-verified info-hash, not by title.
+    // Authenticated RuTracker can expose a direct .torrent URL, but this generic
+    // file-metadata network manager does not share the authenticated RuTracker
+    // cookie jar. BEP 9 is still exact: metadata is addressed by this already-
+    // verified info-hash, never by title.
     requestTorrentFilesViaBep9(torrent, requestSerial);
 }
 
