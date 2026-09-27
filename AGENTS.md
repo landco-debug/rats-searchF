@@ -1476,3 +1476,83 @@ Handoff:
      `details.php?id=<sourceTopicId>`;
   7. quit/relaunch and repeat without re-entering credentials.
 
+### Stage 37 — fix authenticated Kinozal searches that silently return zero KZ rows
+
+Runtime finding from the Stage 36 macOS ARM build:
+- Kinozal browser authorization succeeds and the Settings session control works;
+- repeated searches such as `терминатор` still show Rutor/RuTracker/NNM results
+  but no `KZ` rows;
+- repeating `Authorize / Re-login` does not change the outcome.
+
+Current-site re-check before changing code (2026-09-28):
+- Kinozal itself reports that legacy `kinozal.tv` is temporarily unavailable,
+  while current mirrors `kinozal.me` and `kinozal.guru` are operating;
+- current browse listings on the working mirrors contain real release rows,
+  including Terminator releases, so the observed zero is not explained by a
+  global Kinozal outage;
+- current Jackett definitions still use the same `browse.php` row layout and
+  current mirrors;
+- Kinozal's own/current helper scripts obtain
+  `get_srv_details.php?id=<id>&action=2` as a same-origin AJAX request from a
+  normal tracker page;
+- an actively maintained independent parser documented a production failure mode
+  on 2026-09-27 where a stale/guest/Cloudflare response looked like a successful
+  empty Kinozal run unless the client proved the listing/session explicitly.
+
+Root causes in Stage 36:
+1. the exact info-hash endpoint was opened as a new top-level WKWebView
+   navigation. That is not Kinozal's normal request shape and loses the
+   same-page AJAX/Referer context;
+2. if that response contained no exact info-hash, Stage 36 counted the candidate
+   only as an ordinary reject, so all KZ rows could disappear without a visible
+   provider error;
+3. browse-page success was proved only by host/path/title, allowing a branded
+   guest/error shell to be mistaken for a legitimate empty search;
+4. a successful authorization/search on the fallback `.guru` mirror was not
+   remembered; the next search restarted from `.me`.
+
+Commit:
+- this Stage 37 commit fixes the transport and diagnostics atomically and updates
+  this handoff.
+
+Implemented:
+- `KinozalBrowser::fetchText()` now executes an in-page same-origin
+  `fetch()` through WebKit's async-JavaScript API while the WebView remains on
+  the exact `details.php?id=<id>` page;
+- the request carries the persistent WebKit cookies/Cloudflare state and an XHR
+  marker, matching the site's normal AJAX context;
+- `get_srv_details.php?id=<same id>&action=2` is no longer loaded as a
+  top-level page;
+- a server-details response without `Инфо хеш` / `Info hash` is now an
+  explicit provider failure rather than a silent rejected row;
+- exact-detail parser/identity failures are also counted as provider failures, so
+  an all-rejected Kinozal run becomes visible in the final source status;
+- browse-page acceptance now requires a current official mirror plus a branded
+  page and positive listing/session evidence (logged-in marker, concrete
+  `details.php?id=` rows, or an explicit zero-results message);
+- if a page visibly contains concrete release links but the parser produces zero
+  candidates, the client names that parser failure and tries the fallback mirror;
+- the mirror that actually succeeds is remembered for subsequent searches;
+- exact-source identity remains unchanged: a KZ row is emitted only after the
+  exact detail page and the exact same numeric ID's 40-hex info-hash are proved.
+
+Why repeated re-login did not help Stage 36:
+- authorization and search-result admission are separate steps;
+- the user's session could be valid while every candidate was later discarded at
+  the incorrectly transported server-details step.
+
+Handoff:
+- branch: `stage37-kinozal-ajax-details`;
+- parent: Stage 36 head
+  `3153145836f12a13eecfba04da92be2bc7fc13a4`;
+- runtime acceptance on MacBook Air M1 / macOS Sequoia:
+  1. authorize Kinozal once if necessary;
+  2. search `терминатор`;
+  3. at least one valid Kinozal release should appear with a `KZ` badge when
+     Kinozal returns matching releases;
+  4. selecting it must show the exact release data and file list;
+  5. if the site/Cloudflare blocks a stage, the bottom source status must name
+     the Kinozal failure instead of silently showing zero KZ rows;
+  6. repeat the search and relaunch the app to verify the working mirror/session
+     remains usable.
+

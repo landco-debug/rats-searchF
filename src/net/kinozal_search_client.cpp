@@ -43,7 +43,7 @@ void KinozalSearchClient::cancel()
     rejected_ = 0;
     active_ = 0;
     requestFailures_ = 0;
-    mirrorIndex_ = 0;
+    mirrorIndex_ = preferredMirrorIndex_;
     searchResolved_ = false;
     lastError_.clear();
 #ifdef __APPLE__
@@ -90,6 +90,7 @@ void KinozalSearchClient::startAuthorizationAtMirror(
             }
 
             mirrorIndex_ = mirror;
+            preferredMirrorIndex_ = mirror;
             emit browserAuthorizationChanged(true,
                 tr("Kinozal browser session is authorized on %1.")
                     .arg(QUrl(mirrorBaseUrls_.at(mirror)).host()));
@@ -127,7 +128,7 @@ void KinozalSearchClient::search(
     rejected_ = 0;
     active_ = 0;
     requestFailures_ = 0;
-    mirrorIndex_ = 0;
+    mirrorIndex_ = preferredMirrorIndex_;
     searchResolved_ = false;
     finishedEmitted_ = false;
 
@@ -185,6 +186,14 @@ void KinozalSearchClient::fetchSearchPage(int generation)
                     qMin(120, qMax(requestedLimit_,
                                   requestedLimit_ * 3)));
 
+            if (candidates.isEmpty()
+                && body.contains("details.php?id=")) {
+                tryNextMirror(generation,
+                    tr("%1 returned release rows that the Kinozal parser could not read.")
+                        .arg(finalUrl.host()));
+                return;
+            }
+
             std::stable_sort(
                 candidates.begin(), candidates.end(),
                 [this](const domain::Torrent& a,
@@ -196,6 +205,7 @@ void KinozalSearchClient::fetchSearchPage(int generation)
                 });
 
             searchResolved_ = true;
+            preferredMirrorIndex_ = mirrorIndex_;
             emit browserAuthorizationChanged(true,
                 tr("Kinozal browser session is active on %1.")
                     .arg(finalUrl.host()));
@@ -248,15 +258,18 @@ void KinozalSearchClient::fetchDetail(
             if (generation != generation_ || finishedEmitted_)
                 return;
 
-            if (!error.isEmpty()
-                || !KinozalSource::applyDetailPage(
+            QString failure = error;
+            if (failure.isEmpty()
+                && !KinozalSource::applyDetailPage(
                     job.torrent, body, finalUrl)) {
+                failure = tr("exact detail page could not be validated");
+            }
+
+            if (!failure.isEmpty()) {
                 ++rejected_;
-                if (!error.isEmpty()) {
-                    ++requestFailures_;
-                    lastError_ = tr("detail %1: %2")
-                                     .arg(job.detailUrl.toString(), error);
-                }
+                ++requestFailures_;
+                lastError_ = tr("detail %1: %2")
+                                 .arg(job.detailUrl.toString(), failure);
                 active_ = 0;
                 processNext(generation);
                 return;
@@ -285,7 +298,10 @@ void KinozalSearchClient::fetchServerDetails(
     query.addQueryItem(QStringLiteral("action"), QStringLiteral("2"));
     url.setQuery(query);
 
-    browser_->get(url,
+    // Kinozal's own detail page obtains this fragment via same-origin AJAX.
+    // Keep the WebView on the exact details.php page and do the same: top-level
+    // navigation can lose the request context Cloudflare/site logic expects.
+    browser_->fetchText(url,
         [this, job = std::move(job), generation](
             const QByteArray& body, const QUrl&,
             const QString& error) mutable {
@@ -293,7 +309,14 @@ void KinozalSearchClient::fetchServerDetails(
                 return;
 
             bool accepted = false;
-            if (error.isEmpty()
+            QString failure = error;
+            if (failure.isEmpty()
+                && !body.contains("Инфо хеш")
+                && !body.contains("Info hash")) {
+                failure = tr("server-details response contained no exact info-hash");
+            }
+
+            if (failure.isEmpty()
                 && KinozalSource::applyServerDetails(
                     job.torrent, body)
                 && KinozalSource::isStrictComplete(job.torrent)) {
@@ -309,13 +332,15 @@ void KinozalSearchClient::fetchServerDetails(
                     ++accepted_;
                     emit resultReady(currentQuery_, job.torrent);
                 }
+            } else if (failure.isEmpty()) {
+                failure = tr("server-details exact identity validation failed");
             }
 
             if (!accepted)
                 ++rejected_;
-            if (!error.isEmpty()) {
+            if (!failure.isEmpty()) {
                 ++requestFailures_;
-                lastError_ = tr("get_srv_details: %1").arg(error);
+                lastError_ = tr("get_srv_details: %1").arg(failure);
             }
 
             active_ = 0;

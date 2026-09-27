@@ -72,6 +72,7 @@ private:
     int active_ = 0;
     int requestFailures_ = 0;
     int mirrorIndex_ = 0;
+    int preferredMirrorIndex_ = 0;
     bool searchResolved_ = false;
     bool finishedEmitted_ = true;
     QString currentQuery_;

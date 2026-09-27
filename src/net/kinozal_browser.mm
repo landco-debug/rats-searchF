@@ -32,6 +32,8 @@ struct Pending {
 @property (nonatomic, strong) WKWebView* web;
 - (void)get:(const QUrl&)url
     completion:(rats::net::KinozalBrowser::Completion)completion;
+- (void)fetchText:(const QUrl&)url
+    completion:(rats::net::KinozalBrowser::Completion)completion;
 - (void)authorize:(const QUrl&)url
     completion:(rats::net::KinozalBrowser::Completion)completion;
 - (void)clearSession:(std::function<void()>)completion;
@@ -145,6 +147,67 @@ struct Pending {
         completion:std::move(completion)];
 }
 
+- (void)fetchText:(const QUrl&)url
+    completion:(rats::net::KinozalBrowser::Completion)completion {
+    if (!completion)
+        return;
+
+    NSString* absolute = QString::fromLatin1(
+        url.toEncoded(QUrl::FullyEncoded)).toNSString();
+    if (!absolute || absolute.length == 0) {
+        completion(QByteArray(), QUrl(),
+            QStringLiteral("Invalid Kinozal fetch URL"));
+        return;
+    }
+
+    const unsigned long serial = _serial;
+    NSString* script =
+        @"const response = await fetch(url, {"
+         " credentials: 'same-origin',"
+         " headers: {'X-Requested-With': 'XMLHttpRequest'}"
+         "});"
+         "const text = await response.text();"
+         "return {ok: response.ok, status: response.status,"
+         " url: response.url, text};";
+
+    [_web callAsyncJavaScript:script
+        arguments:@{@"url": absolute}
+        inFrame:nil
+        inContentWorld:[WKContentWorld pageWorld]
+        completionHandler:^(id value, NSError* error) {
+            if (self->_serial != serial)
+                return;
+
+            if (error || ![value isKindOfClass:[NSDictionary class]]) {
+                completion(QByteArray(), QUrl(),
+                    error
+                        ? QString::fromUtf8(
+                              error.localizedDescription.UTF8String)
+                        : QStringLiteral(
+                              "Kinozal in-page fetch returned no response"));
+                return;
+            }
+
+            NSDictionary* response = value;
+            const bool ok = [response[@"ok"] boolValue];
+            const int status = [response[@"status"] intValue];
+            NSString* text = response[@"text"] ?: @"";
+            NSString* finalUrl = response[@"url"] ?: absolute;
+            const QUrl resultUrl(
+                QString::fromUtf8(finalUrl.UTF8String));
+
+            if (!ok) {
+                completion(QByteArray(), resultUrl,
+                    QStringLiteral("Kinozal AJAX request returned HTTP %1")
+                        .arg(status));
+                return;
+            }
+
+            completion(QByteArray(text.UTF8String),
+                resultUrl, QString());
+        }];
+}
+
 - (void)authorize:(const QUrl&)url
     completion:(rats::net::KinozalBrowser::Completion)completion {
     [self start:url purpose:rats::net::BrowserPurpose::Authorize
@@ -203,6 +266,8 @@ struct Pending {
         " path: location.pathname,"
         " title: document.title || '',"
         " loggedIn: text.includes('Выход') || !!document.querySelector('a[href*=\"logout.php\"]'),"
+        " details: document.querySelectorAll('a[href*=\"details.php?id=\"]').length,"
+        " emptyResults: /Найдено\\s*0\\s+раздач/i.test(text),"
         " loginForm: !!document.querySelector('input[name=\"password\"], input[name=\"login_password\"]'),"
         " cf: html.includes('cf_chl_opt') || html.includes('challenge-platform') ||"
         "     html.includes('orchestrate/chl_page') || (document.title || '').includes('Just a moment')"
@@ -230,6 +295,8 @@ struct Pending {
                 || [host isEqualToString:@"kinozal.guru"]
                 || [host isEqualToString:@"www.kinozal.guru"];
             const bool loggedIn = [snapshot[@"loggedIn"] boolValue];
+            const int details = [snapshot[@"details"] intValue];
+            const bool emptyResults = [snapshot[@"emptyResults"] boolValue];
             const bool interactive =
                 [snapshot[@"loginForm"] boolValue]
                 || [snapshot[@"cf"] boolValue];
@@ -256,14 +323,18 @@ struct Pending {
 
             bool ready = false;
             if (officialHost && samePath && !interactive) {
-                if (expectedPath == QStringLiteral("/browse.php")
-                    || expectedPath == QStringLiteral("/details.php")) {
-                    ready = [title rangeOfString:@"Кинозал."
-                                         options:NSCaseInsensitiveSearch]
-                                .location != NSNotFound;
+                const bool branded
+                    = [title rangeOfString:@"Кинозал."
+                                   options:NSCaseInsensitiveSearch]
+                          .location != NSNotFound;
+                if (expectedPath == QStringLiteral("/browse.php")) {
+                    // A branded guest/error shell is not a successful empty
+                    // search. Prove a real listing/session (or an explicit zero).
+                    ready = branded
+                        && (loggedIn || details > 0 || emptyResults);
                 } else if (expectedPath
-                    == QStringLiteral("/get_srv_details.php")) {
-                    ready = true;
+                    == QStringLiteral("/details.php")) {
+                    ready = branded;
                 }
             }
 
@@ -350,6 +421,13 @@ void KinozalBrowser::get(const QUrl& url, Completion completion)
 {
     [(__bridge RatsKinozalWebBridge*)bridge_
         get:url completion:std::move(completion)];
+}
+
+void KinozalBrowser::fetchText(
+    const QUrl& url, Completion completion)
+{
+    [(__bridge RatsKinozalWebBridge*)bridge_
+        fetchText:url completion:std::move(completion)];
 }
 
 void KinozalBrowser::authorize(
