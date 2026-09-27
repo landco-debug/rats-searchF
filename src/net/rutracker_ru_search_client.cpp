@@ -20,10 +20,12 @@ QNetworkRequest requestFor(const QUrl& url)
     request.setHeader(QNetworkRequest::UserAgentHeader,
         QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/154 Safari/537.36"));
+                       "Chrome/154.0.0.0 Safari/537.36"));
     request.setRawHeader("Accept",
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
+    request.setRawHeader("DNT", "1");
+    request.setRawHeader("Upgrade-Insecure-Requests", "1");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
         QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(20000);
@@ -36,6 +38,14 @@ bool hasLoginForm(const QString& html)
         && html.contains(QStringLiteral("login_password"), Qt::CaseInsensitive);
 }
 
+bool looksLikeChallenge(const QString& html)
+{
+    return html.contains(QStringLiteral("cf-chl-"), Qt::CaseInsensitive)
+        || html.contains(QStringLiteral("/cdn-cgi/challenge-platform"), Qt::CaseInsensitive)
+        || html.contains(QStringLiteral("Just a moment"), Qt::CaseInsensitive)
+        || html.contains(QStringLiteral("captcha"), Qt::CaseInsensitive);
+}
+
 } // namespace
 
 RuTrackerRuSearchClient::RuTrackerRuSearchClient(QObject* parent)
@@ -43,6 +53,7 @@ RuTrackerRuSearchClient::RuTrackerRuSearchClient(QObject* parent)
     , networkManager_(new QNetworkAccessManager(this))
 {
     resetCookieJar();
+    resetMirrorCycle();
 }
 
 RuTrackerRuSearchClient::~RuTrackerRuSearchClient()
@@ -59,6 +70,51 @@ void RuTrackerRuSearchClient::resetCookieJar()
     networkManager_->setCookieJar(new QNetworkCookieJar(networkManager_));
 }
 
+void RuTrackerRuSearchClient::resetMirrorCycle()
+{
+    mirrorIndex_ = 0;
+    activeMirrorBaseUrl_ = mirrorBaseUrls_.isEmpty()
+        ? QStringLiteral("https://rutracker.net")
+        : mirrorBaseUrls_.first();
+    lastMirrorError_.clear();
+}
+
+QUrl RuTrackerRuSearchClient::urlOnActiveMirror(const QString& path) const
+{
+    QUrl url(activeMirrorBaseUrl_);
+    url.setPath(path);
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url;
+}
+
+bool RuTrackerRuSearchClient::tryNextMirror(
+    int generation, const QString& reason)
+{
+    if (generation != generation_ || finishedEmitted_)
+        return false;
+
+    lastMirrorError_ = reason;
+    const int next = mirrorIndex_ + 1;
+    if (next >= mirrorBaseUrls_.size()) {
+        finishNow(generation,
+            tr("RuTracker failed on all official mirrors. Last error: %1")
+                .arg(reason));
+        return false;
+    }
+
+    mirrorIndex_ = next;
+    activeMirrorBaseUrl_ = mirrorBaseUrls_.at(mirrorIndex_);
+    authenticated_ = false;
+    authRetried_ = false;
+    resetCookieJar();
+
+    qInfo() << "[RuTrackerRuSearchClient] switching mirror to"
+            << activeMirrorBaseUrl_ << "after" << reason;
+    authenticate(generation);
+    return true;
+}
+
 void RuTrackerRuSearchClient::setCredentials(
     const QString& username, const QString& password)
 {
@@ -70,6 +126,7 @@ void RuTrackerRuSearchClient::setCredentials(
     password_ = password;
     authenticated_ = false;
     resetCookieJar();
+    resetMirrorCycle();
 }
 
 bool RuTrackerRuSearchClient::isConfigured() const
@@ -132,8 +189,11 @@ void RuTrackerRuSearchClient::search(
 
     if (authenticated_)
         fetchSearchPage(generation);
-    else
+    else {
+        resetMirrorCycle();
+        resetCookieJar();
         authenticate(generation);
+    }
 }
 
 void RuTrackerRuSearchClient::authenticate(int generation)
@@ -145,7 +205,7 @@ void RuTrackerRuSearchClient::authenticate(int generation)
         return;
     }
 
-    const QUrl loginUrl(QStringLiteral("https://rutracker.org/forum/login.php"));
+    const QUrl loginUrl = urlOnActiveMirror(QStringLiteral("/forum/login.php"));
     QNetworkRequest request = requestFor(loginUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
         QStringLiteral("application/x-www-form-urlencoded"));
@@ -166,6 +226,7 @@ void RuTrackerRuSearchClient::authenticate(int generation)
 
             const QNetworkReply::NetworkError error = reply->error();
             const QString errorText = reply->errorString();
+            const QUrl finalUrl = reply->url();
             const QByteArray raw = error == QNetworkReply::NoError
                 ? reply->readAll() : QByteArray();
             reply->deleteLater();
@@ -175,8 +236,9 @@ void RuTrackerRuSearchClient::authenticate(int generation)
 
             if (error != QNetworkReply::NoError) {
                 authenticated_ = false;
-                finishNow(generation,
-                    tr("RuTracker login request failed: %1").arg(errorText));
+                tryNextMirror(generation,
+                    tr("%1 login request failed: %2")
+                        .arg(activeMirrorBaseUrl_, errorText));
                 return;
             }
 
@@ -198,14 +260,18 @@ void RuTrackerRuSearchClient::authenticate(int generation)
 
             if (!hasSessionCookie && !loggedInMarker) {
                 authenticated_ = false;
-                QString reason = tr("RuTracker authentication failed. Check the "
-                                    "login/password; the site may also require a "
-                                    "captcha or browser challenge.");
-                finishNow(generation, reason);
+                const QString cause = looksLikeChallenge(html)
+                    ? tr("anti-bot/captcha challenge")
+                    : tr("authentication was not accepted");
+                tryNextMirror(generation,
+                    tr("%1 %2 (final URL: %3)")
+                        .arg(activeMirrorBaseUrl_, cause, finalUrl.toString()));
                 return;
             }
 
             authenticated_ = true;
+            qInfo() << "[RuTrackerRuSearchClient] authenticated on"
+                    << activeMirrorBaseUrl_;
             fetchSearchPage(generation);
         });
 }
@@ -215,8 +281,14 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
     if (generation != generation_ || finishedEmitted_)
         return;
 
-    const QUrl url = RuTrackerRuSource::searchUrl(
+    QUrl url = RuTrackerRuSource::searchUrl(
         currentQuery_, currentSortKey_, currentContentType_);
+    const QUrl base(activeMirrorBaseUrl_);
+    url.setScheme(base.scheme());
+    url.setHost(base.host());
+    if (base.port() >= 0)
+        url.setPort(base.port());
+
     QNetworkReply* reply = networkManager_->get(requestFor(url));
     replies_.insert(reply);
 
@@ -235,23 +307,40 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                 return;
 
             if (error != QNetworkReply::NoError) {
-                finishNow(generation,
-                    tr("RuTracker search request failed: %1").arg(errorText));
+                authenticated_ = false;
+                tryNextMirror(generation,
+                    tr("%1 search request failed: %2")
+                        .arg(activeMirrorBaseUrl_, errorText));
                 return;
             }
 
             const QString pageText = sourceparse::decodeTrackerText(body);
-            if (hasLoginForm(pageText)
-                && !pageText.contains(QStringLiteral(R"(id="tor-tbl")"),
-                    Qt::CaseInsensitive)) {
+            const bool hasTorrentTable = pageText.contains(
+                QStringLiteral(R"(id="tor-tbl")"), Qt::CaseInsensitive)
+                || pageText.contains(
+                    QStringLiteral(R"(id='tor-tbl')"), Qt::CaseInsensitive);
+
+            if ((hasLoginForm(pageText) || finalUrl.path().contains(
+                        QStringLiteral("login.php"), Qt::CaseInsensitive))
+                && !hasTorrentTable) {
                 authenticated_ = false;
                 if (!authRetried_) {
                     authRetried_ = true;
+                    resetCookieJar();
                     authenticate(generation);
                     return;
                 }
-                finishNow(generation,
-                    tr("RuTracker session expired and re-authentication failed."));
+                tryNextMirror(generation,
+                    tr("%1 session returned to the login page")
+                        .arg(activeMirrorBaseUrl_));
+                return;
+            }
+
+            if (!hasTorrentTable && looksLikeChallenge(pageText)) {
+                authenticated_ = false;
+                tryNextMirror(generation,
+                    tr("%1 returned an anti-bot/captcha challenge")
+                        .arg(activeMirrorBaseUrl_));
                 return;
             }
 
@@ -262,6 +351,13 @@ void RuTrackerRuSearchClient::fetchSearchPage(int generation)
                     body, finalUrl, candidateCap);
 
             if (candidates.isEmpty()) {
+                if (!hasTorrentTable) {
+                    authenticated_ = false;
+                    tryNextMirror(generation,
+                        tr("%1 returned an unexpected non-tracker page")
+                            .arg(activeMirrorBaseUrl_));
+                    return;
+                }
                 searchPageResolved_ = true;
                 finishNow(generation,
                     tr("RuTracker returned no exact torrent rows for this query."));
@@ -374,6 +470,7 @@ void RuTrackerRuSearchClient::finishNow(
 
     finishedEmitted_ = true;
     qInfo() << "[RuTrackerRuSearchClient] finished"
+            << "mirror" << activeMirrorBaseUrl_
             << "accepted" << accepted_
             << "rejected" << rejected_
             << (error.isEmpty() ? QString() : error);
