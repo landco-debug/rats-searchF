@@ -22,6 +22,9 @@
 namespace rats::app {
 class Application;
 }
+namespace rats::net {
+struct TorrentMetadata;
+}
 
 // UI components
 class QLineEdit;
@@ -36,6 +39,7 @@ class QMenu;
 class QToolButton;
 class QSpinBox;
 class QDoubleSpinBox;
+class QNetworkAccessManager;
 class TopTorrentsWidget;
 class FeedWidget;
 class DownloadsWidget;
@@ -188,6 +192,15 @@ private:
 
     // Torrent detail / action helpers (used by multiple tabs)
     void showTorrentDetails(const rats::domain::Torrent& torrent);
+    void requestTorrentFiles(const rats::domain::Torrent& torrent);
+    void requestTorrentFilesViaBep9(
+        const rats::domain::Torrent& torrent,
+        quint64 requestSerial,
+        const QString& previousError = QString());
+    void acceptResolvedTorrentFiles(
+        const rats::domain::Torrent& torrent,
+        const rats::net::TorrentMetadata& metadata,
+        quint64 requestSerial);
     void openMagnetLink(const rats::domain::Torrent& torrent);
     void exportTorrentToFile(const rats::domain::Torrent& torrent);
     // A .torrent requested via exportTorrentToFile is ready: prompt for a save
@@ -235,6 +248,7 @@ private:
     QSplitter* verticalSplitter = nullptr; // Vertical: main content + files panel
     TorrentDetailsPanel* detailsPanel = nullptr;
     TorrentFilesWidget* filesWidget = nullptr; // Bottom panel for file list
+    QNetworkAccessManager* fileMetadataNetwork_ = nullptr;
 
     // Tab widgets
     TopTorrentsWidget* topTorrentsWidget = nullptr;
@@ -261,6 +275,8 @@ private:
 
     // State
     QString currentSearchQuery_;
+    quint64 fileMetadataRequestSerial_ = 0;
+    QString fileMetadataLoadingHash_;
     QSet<QString> strictSearchHashes_;
     int strictSourcesPending_ = 0;
     int strictSourcesRejected_ = 0;

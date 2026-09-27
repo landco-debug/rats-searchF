@@ -32,6 +32,7 @@
 #include "net/p2p_transport.h"
 #include "net/rutor_search_client.h"
 #include "net/rutracker_ru_search_client.h"
+#include "net/torrent_engine.h"
 #include "peer/peer_api.h"
 #include "rest/api_router.h"
 #include "services/database_sync_service.h"
@@ -76,6 +77,11 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMetaObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -92,6 +98,7 @@
 #include <QTabWidget>
 #include <QTabBar>
 #include <QTableView>
+#include <QTemporaryFile>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
@@ -134,6 +141,7 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     setupMenuBar();
     setupStatusBar();
     setupSystemTray();
+    fileMetadataNetwork_ = new QNetworkAccessManager(this);
 
     // On macOS, clicking the Dock icon activates the application but does not
     // necessarily route through QSystemTrayIcon. If this window was hidden by
@@ -1412,7 +1420,10 @@ void MainWindow::onTabChanged(int index)
         if (idx.isValid())
             selectedTorrent = searchResultModel->getTorrent(idx.row());
     } else if (currentWidget == downloadsWidget) {
-        // Downloads tab has no torrent selection — hide the detail panels.
+        // Downloads tab has no torrent selection — hide the detail panels and
+        // invalidate any metadata callback belonging to the previous selection.
+        ++fileMetadataRequestSerial_;
+        fileMetadataLoadingHash_.clear();
         detailsPanel->hide();
         filesWidget->clear();
         filesWidget->hide();
@@ -1426,6 +1437,8 @@ void MainWindow::onTabChanged(int index)
     if (selectedTorrent.isValid()) {
         showTorrentDetails(selectedTorrent);
     } else {
+        ++fileMetadataRequestSerial_;
+        fileMetadataLoadingHash_.clear();
         detailsPanel->hide();
         filesWidget->clear();
         filesWidget->hide();
@@ -1434,10 +1447,251 @@ void MainWindow::onTabChanged(int index)
 
 void MainWindow::onDetailsPanelCloseRequested()
 {
+    ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_.clear();
     detailsPanel->hide();
     filesWidget->clear();
     filesWidget->hide();
     resultsTableView->clearSelection();
+}
+
+namespace {
+
+QVector<rats::domain::File> domainFilesFromMetadata(
+    const rats::net::TorrentMetadata& metadata)
+{
+    QVector<rats::domain::File> files;
+    files.reserve(metadata.files.size());
+    for (const rats::net::EngineFile& source : metadata.files) {
+        if (source.path.isEmpty() || source.size < 0)
+            continue;
+        rats::domain::File file;
+        file.path = source.path;
+        file.size = source.size;
+        files.append(std::move(file));
+    }
+    return files;
+}
+
+QNetworkRequest sourceTorrentRequest(const QUrl& url)
+{
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+        QStringLiteral("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 RatsSearch/2"));
+    request.setRawHeader("Accept",
+        "application/x-bittorrent,application/octet-stream,*/*;q=0.5");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+        QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(10000);
+    return request;
+}
+
+} // namespace
+
+void MainWindow::acceptResolvedTorrentFiles(
+    const Torrent& torrent,
+    const rats::net::TorrentMetadata& metadata,
+    quint64 requestSerial)
+{
+    if (requestSerial != fileMetadataRequestSerial_)
+        return;
+    if (!metadata.valid || metadata.hash.compare(torrent.hash, Qt::CaseInsensitive) != 0) {
+        requestTorrentFilesViaBep9(
+            torrent, requestSerial, tr("source metadata hash mismatch"));
+        return;
+    }
+
+    const QVector<rats::domain::File> files
+        = domainFilesFromMetadata(metadata);
+    if (files.isEmpty()) {
+        requestTorrentFilesViaBep9(
+            torrent, requestSerial, tr("source metadata has no file list"));
+        return;
+    }
+
+    if (app_->torrents())
+        app_->torrents()->updateFiles(torrent.hash, files);
+
+    fileMetadataLoadingHash_.clear();
+    if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+        filesWidget->setFiles(torrent.hash,
+            metadata.name.isEmpty() ? torrent.name : metadata.name, files);
+        showStatusMessage(
+            tr("📁 Loaded %n torrent file(s)", nullptr, files.size()), 2500);
+    }
+}
+
+void MainWindow::requestTorrentFilesViaBep9(
+    const Torrent& torrent,
+    quint64 requestSerial,
+    const QString& previousError)
+{
+    if (requestSerial != fileMetadataRequestSerial_)
+        return;
+
+    auto* engine = app_ ? app_->engine() : nullptr;
+    if (!engine || !engine->isReady()) {
+        fileMetadataLoadingHash_.clear();
+        if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+            filesWidget->setError(torrent.hash, torrent.name,
+                previousError.isEmpty()
+                    ? tr("BitTorrent metadata service is unavailable")
+                    : previousError);
+        }
+        return;
+    }
+
+    QPointer<MainWindow> guard(this);
+    const bool started = engine->fetchMetadata(
+        torrent.hash,
+        [guard, torrent, requestSerial, previousError](
+            const rats::net::TorrentMetadata& metadata,
+            const QString& error) {
+            if (!guard)
+                return;
+            QMetaObject::invokeMethod(guard,
+                [guard, torrent, requestSerial, metadata, error, previousError]() {
+                    if (!guard || requestSerial != guard->fileMetadataRequestSerial_)
+                        return;
+
+                    if (metadata.valid
+                        && metadata.hash.compare(
+                               torrent.hash, Qt::CaseInsensitive) == 0) {
+                        const QVector<rats::domain::File> files
+                            = domainFilesFromMetadata(metadata);
+                        if (!files.isEmpty()) {
+                            if (guard->app_->torrents())
+                                guard->app_->torrents()->updateFiles(
+                                    torrent.hash, files);
+                            guard->fileMetadataLoadingHash_.clear();
+                            if (guard->detailsPanel
+                                && guard->detailsPanel->currentHash()
+                                    == torrent.hash) {
+                                guard->filesWidget->setFiles(
+                                    torrent.hash,
+                                    metadata.name.isEmpty()
+                                        ? torrent.name : metadata.name,
+                                    files);
+                                guard->showStatusMessage(
+                                    tr("📁 Loaded %n torrent file(s)",
+                                        nullptr, files.size()),
+                                    2500);
+                            }
+                            return;
+                        }
+                    }
+
+                    guard->fileMetadataLoadingHash_.clear();
+                    if (guard->detailsPanel
+                        && guard->detailsPanel->currentHash() == torrent.hash) {
+                        QString reason = error.trimmed();
+                        if (reason.isEmpty())
+                            reason = previousError.trimmed();
+                        if (reason.isEmpty())
+                            reason = tr("metadata not available from the swarm");
+                        guard->filesWidget->setError(
+                            torrent.hash, torrent.name, reason);
+                    }
+                },
+                Qt::QueuedConnection);
+        },
+        20000);
+
+    if (!started) {
+        fileMetadataLoadingHash_.clear();
+        if (detailsPanel && detailsPanel->currentHash() == torrent.hash) {
+            filesWidget->setError(torrent.hash, torrent.name,
+                previousError.isEmpty()
+                    ? tr("could not start BitTorrent metadata request")
+                    : previousError);
+        }
+    }
+}
+
+void MainWindow::requestTorrentFiles(const Torrent& torrent)
+{
+    if (!torrent.isValid() || filesWidget->hasFiles())
+        return;
+
+    if (fileMetadataLoadingHash_ == torrent.hash) {
+        filesWidget->setLoading(torrent.hash, torrent.name);
+        return;
+    }
+
+    const quint64 requestSerial = ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_ = torrent.hash;
+    filesWidget->setLoading(torrent.hash, torrent.name);
+
+    // Best path for Rutor: the SAME source search row that gave us the exact
+    // detail URL and info-hash also exposes a .torrent download. Parse that
+    // metainfo first, then accept it only if its computed hash is identical.
+    const QString provider
+        = torrent.info.value(QStringLiteral("sourceProvider")).toString();
+    const QUrl sourceTorrentUrl(
+        torrent.info.value(QStringLiteral("sourceTorrentUrl")).toString());
+    if (provider == QStringLiteral("rutor")
+        && sourceTorrentUrl.isValid()
+        && (sourceTorrentUrl.scheme() == QStringLiteral("https")
+            || sourceTorrentUrl.scheme() == QStringLiteral("http"))
+        && fileMetadataNetwork_) {
+        QNetworkReply* reply
+            = fileMetadataNetwork_->get(sourceTorrentRequest(sourceTorrentUrl));
+        connect(reply, &QNetworkReply::finished, this,
+            [this, reply, torrent, requestSerial]() {
+                const auto error = reply->error();
+                const QString errorText = reply->errorString();
+                QByteArray bytes;
+                if (error == QNetworkReply::NoError)
+                    bytes = reply->readAll();
+                reply->deleteLater();
+
+                if (requestSerial != fileMetadataRequestSerial_)
+                    return;
+
+                // Torrent metainfo is normally tiny. Refuse unexpectedly large
+                // bodies (HTML challenge/error pages included) and fall back to
+                // BEP 9 rather than feeding arbitrary data into the parser.
+                constexpr int kMaxTorrentMetadataBytes = 32 * 1024 * 1024;
+                if (error == QNetworkReply::NoError
+                    && !bytes.isEmpty()
+                    && bytes.size() <= kMaxTorrentMetadataBytes
+                    && app_->engine()) {
+                    QTemporaryFile temp(
+                        QDir::tempPath()
+                        + QStringLiteral("/rats-source-XXXXXX.torrent"));
+                    if (temp.open()
+                        && temp.write(bytes) == bytes.size()) {
+                        temp.flush();
+                        temp.close();
+                        const rats::net::TorrentMetadata metadata
+                            = app_->engine()->readTorrentFile(
+                                temp.fileName());
+                        if (metadata.valid
+                            && metadata.hash.compare(
+                                   torrent.hash, Qt::CaseInsensitive) == 0
+                            && !metadata.files.isEmpty()) {
+                            acceptResolvedTorrentFiles(
+                                torrent, metadata, requestSerial);
+                            return;
+                        }
+                    }
+                }
+
+                requestTorrentFilesViaBep9(
+                    torrent, requestSerial,
+                    error == QNetworkReply::NoError
+                        ? tr("exact source .torrent could not be verified")
+                        : tr("exact source .torrent failed: %1")
+                              .arg(errorText));
+            });
+        return;
+    }
+
+    // RuTracker.RU public search provides exact topic+magnet provenance but no
+    // stable direct .torrent URL. BEP 9 is still exact: metadata is addressed by
+    // this already-verified info-hash, not by title.
+    requestTorrentFilesViaBep9(torrent, requestSerial);
 }
 
 void MainWindow::showTorrentDetails(const Torrent& torrent)
@@ -1453,6 +1707,9 @@ void MainWindow::showTorrentDetails(const Torrent& torrent)
     filesWidget->setTorrent(torrent);
     filesWidget->show();
     verticalSplitter->setSizes({ 600, 200 });
+
+    if (!filesWidget->hasFiles())
+        requestTorrentFiles(torrent);
 }
 
 void MainWindow::openMagnetLink(const Torrent& torrent)

@@ -318,3 +318,35 @@ Implemented for the Apple Silicon job:
 - add `BUILD-REVISION.txt` at the DMG root containing the full source SHA.
 
 This stage changes CI/package provenance only; application behavior from Stages 7-12 is unchanged.
+
+
+### Stage 14 — on-demand exact torrent file lists
+
+Commit message: `feat: resolve selected torrent file lists on demand`.
+
+User-visible goal:
+- replace the empty `No files` bottom panel for strict-source search results with the real contents of the selected torrent;
+- do this without weakening source identity or downloading the media payload.
+
+Implemented:
+- Rutor search provenance now also stores `sourceTorrentUrl` from the same `a.downgif` result row that provided the exact detail URL and info-hash;
+- when a selected torrent already has files in the repository, the existing instant path remains unchanged;
+- otherwise the Files panel shows `Loading torrent metadata…`, not a false `No files`;
+- for Rutor, Rats Search first downloads the exact source `.torrent`, parses it with the existing `TorrentEngine::readTorrentFile()`, and accepts it ONLY when its computed info-hash equals the selected verified hash;
+- if the direct source file is unavailable/unparseable/mismatched, the resolver falls back to existing DHT/BEP 9 `TorrentEngine::fetchMetadata()` for the same verified info-hash;
+- public RuTracker.RU goes directly to the BEP 9 path because its public search contract has exact topic+magnet provenance but no stable direct download field;
+- BEP 9 downloads metadata only, not movie/content pieces;
+- a 20-second BEP 9 timeout and stale-selection generation guard prevent an old selection from repainting the current file panel;
+- successful file lists are persisted with `TorrentRepository::updateFiles()`, so subsequent selections use the local database immediately;
+- the lower tree shows real paths and sizes and keeps the existing file-selection UI for later downloads;
+- source `.torrent` responses are capped at 32 MiB before parsing;
+- `TorrentFilesWidget` now distinguishes loading and unavailable states.
+
+Identity invariant:
+- HTML title matching is never used for file contents;
+- every accepted file list comes either from a source `.torrent` whose computed hash matches the verified result, or from BEP 9 metadata addressed by that exact info-hash.
+
+Next validation:
+- macOS ARM: select a Rutor result with no cached files and confirm the tree appears quickly;
+- select a RuTracker.RU result and confirm BEP 9 fills the tree when swarm metadata is available;
+- reselect either result and confirm the cached file list appears immediately.

@@ -200,6 +200,10 @@ QVector<domain::Torrent> RutorSource::parseSearchPage(
         QStringLiteral(R"re(<a\b[^>]*href\s*=\s*["'](magnet:\?[^"']*xt=urn:btih:([A-Fa-f0-9]{40})[^"']*)["'][^>]*>)re"),
         QRegularExpression::DotMatchesEverythingOption
             | QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression downloadRe(
+        QStringLiteral(R"re(<a\b(?=[^>]*\bclass\s*=\s*(?:"[^"]*\bdowngif\b[^"]*"|'[^']*\bdowngif\b[^']*'))[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>)re"),
+        QRegularExpression::DotMatchesEverythingOption
+            | QRegularExpression::CaseInsensitiveOption);
 
     QSet<QString> seen;
     QRegularExpressionMatchIterator rows = rowRe.globalMatch(html);
@@ -207,6 +211,7 @@ QVector<domain::Torrent> RutorSource::parseSearchPage(
         const QString row = rows.next().captured(1);
         const QRegularExpressionMatch detail = detailRe.match(row);
         const QRegularExpressionMatch magnet = magnetRe.match(row);
+        const QRegularExpressionMatch download = downloadRe.match(row);
         if (!detail.hasMatch() || !magnet.hasMatch())
             continue;
 
@@ -233,6 +238,11 @@ QVector<domain::Torrent> RutorSource::parseSearchPage(
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
         info[QStringLiteral("sourceTopicId")] = detail.captured(2).toInt();
         info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
+        if (download.hasMatch()) {
+            const QUrl torrentUrl = resolveUrl(pageUrl, download.captured(1));
+            if (torrentUrl.isValid())
+                info[QStringLiteral("sourceTorrentUrl")] = torrentUrl.toString();
+        }
         info[QStringLiteral("sourceVerified")] = false;
         torrent.info = info;
 
