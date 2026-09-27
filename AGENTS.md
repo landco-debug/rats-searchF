@@ -350,3 +350,42 @@ Next validation:
 - macOS ARM: select a Rutor result with no cached files and confirm the tree appears quickly;
 - select a RuTracker.RU result and confirm BEP 9 fills the tree when swarm metadata is available;
 - reselect either result and confirm the cached file list appears immediately.
+
+
+### Stage 15 — first-pass Date/Video correctness and compact search columns
+
+Commit message: `fix: compact strict search results and filters`.
+
+Observed on the validated Stage 14 macOS ARM build:
+- Date was blank on the first source search and appeared only after repeating the query;
+- Date included hours/minutes although only the day is useful in the compact result table;
+- selecting the main `Video` type produced an empty table while the same query under `All types` returned verified video releases;
+- full `Seeders` / `Leechers` headings consumed too much horizontal space;
+- the old self-update check is not appropriate for this fork, where test builds are delivered from the project's GitHub Actions.
+
+Root causes:
+- a fresh source-first torrent has no local-index `added` timestamp until its first persistence round-trip;
+- the legacy content classifier normally derives type from file extensions, but strict results are displayed before Stage 14 resolves the torrent file list, so they were still `Unknown` when the search type filter ran.
+
+Implemented:
+- assign `added=UTC now` before the first strict-source insert/display when it is missing, matching the existing local-index "added" semantics but removing the first-search blank;
+- Date displays `yyyy-MM-dd` only;
+- strict results carrying the already-verified non-empty `video` field are classified as `Video` before filtering;
+- older stored exact-source rows with `Unknown` type are healed through `TorrentRepository::updateClassification()`;
+- new searches clear the previous selection, details panel, files panel and stale file-metadata request context;
+- result headers use compact Cyrillic `С` / `Л` with full Seeders/Leechers tooltips;
+- `С` is theme green (`success`) and `Л` is theme red (`danger`);
+- fixed widths: Size 92 px, С 42 px, Л 42 px, Date 96 px; Name stretches into the reclaimed space;
+- Help > Check for Updates is removed;
+- automatic startup update checking is disabled;
+- the Updates group/checkbox is removed from Settings.
+
+Preserved intentionally:
+- UpdateService/config compatibility code remains compiled but dormant; the desktop UI no longer initiates update checks;
+- strict Rutor + RuTracker.RU source identity, Stage 14 exact file-list resolution, downloads, P2P/DHT background services and existing settings are otherwise unchanged.
+
+Next validation:
+- first search must show Date immediately and without time;
+- Video must return the same valid strict video releases rather than an empty table;
+- С/Л headers must be compact and visibly green/red;
+- Help and Settings must contain no update-check control.

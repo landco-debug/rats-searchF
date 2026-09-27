@@ -211,15 +211,6 @@ QWidget* SettingsDialog::createGeneralTab()
 
     tabLayout->addWidget(searchGroup);
 
-    // --- Updates ---
-    QGroupBox* updatesGroup = new QGroupBox(tr("Updates"));
-    QFormLayout* updatesLayout = new QFormLayout(updatesGroup);
-
-    checkUpdatesCheck_ = new QCheckBox(tr("Check for updates on startup"));
-    updatesLayout->addRow(checkUpdatesCheck_);
-
-    tabLayout->addWidget(updatesGroup);
-
     tabLayout->addStretch();
     return wrapInScrollArea(tab);
 }
@@ -629,7 +620,6 @@ void SettingsDialog::loadSettings()
     startMinimizedCheck_->setChecked(config_->startMinimized());
     minimizeToTrayCheck_->setChecked(config_->trayOnMinimize());
     closeToTrayCheck_->setChecked(config_->trayOnClose());
-    checkUpdatesCheck_->setChecked(config_->checkUpdatesOnStartup());
     searchHistoryCheck_->setChecked(config_->searchHistoryEnabled());
     updateSearchHistoryButton();
 
@@ -706,7 +696,6 @@ void SettingsDialog::saveSettings()
     config_->setStartMinimized(startMinimizedCheck_->isChecked());
     config_->setTrayOnMinimize(minimizeToTrayCheck_->isChecked());
     config_->setTrayOnClose(closeToTrayCheck_->isChecked());
-    config_->setCheckUpdatesOnStartup(checkUpdatesCheck_->isChecked());
     config_->setSearchHistoryEnabled(searchHistoryCheck_->isChecked());
 
     // Autostart lives in the OS (registry / .desktop / launch agent), which is its

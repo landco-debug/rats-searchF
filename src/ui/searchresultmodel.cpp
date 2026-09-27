@@ -1,6 +1,7 @@
 #include "searchresultmodel.h"
 #include "domain/content.h"
 #include "format.h"
+#include "theme.h"
 #include <QDateTime>
 #include <QHash>
 #include <QPair>
@@ -49,7 +50,9 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
         case LeechersColumn:
             return torrent.leechers;
         case DateColumn:
-            return rats::ui::formatDate(torrent.added);
+            return torrent.added.isValid()
+                ? torrent.added.toLocalTime().date().toString(QStringLiteral("yyyy-MM-dd"))
+                : QString();
         default:
             return QVariant();
         }
@@ -94,24 +97,51 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
 
 QVariant SearchResultModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
+    if (orientation != Qt::Horizontal)
         return QVariant();
+
+    if (role == Qt::DisplayRole) {
+        switch (section) {
+        case NameColumn:
+            return tr("Name");
+        case SizeColumn:
+            return tr("Size");
+        case SeedersColumn:
+            return QStringLiteral("С");
+        case LeechersColumn:
+            return QStringLiteral("Л");
+        case DateColumn:
+            return tr("Date");
+        default:
+            return QVariant();
+        }
     }
 
-    switch (section) {
-    case NameColumn:
-        return tr("Name");
-    case SizeColumn:
-        return tr("Size");
-    case SeedersColumn:
-        return tr("Seeders");
-    case LeechersColumn:
-        return tr("Leechers");
-    case DateColumn:
-        return tr("Date");
-    default:
-        return QVariant();
+    // Conventional torrent shorthand: seeders are green, leechers are red.
+    // Use the shared theme tokens so light/dark mode stay consistent.
+    if (role == Qt::ForegroundRole) {
+        const auto& theme = rats::ui::Theme::instance();
+        if (section == SeedersColumn)
+            return theme.color(QLatin1String("success"));
+        if (section == LeechersColumn)
+            return theme.color(QLatin1String("danger"));
     }
+
+    if (role == Qt::TextAlignmentRole
+        && (section == SeedersColumn
+            || section == LeechersColumn
+            || section == DateColumn)) {
+        return Qt::AlignCenter;
+    }
+
+    if (role == Qt::ToolTipRole) {
+        if (section == SeedersColumn)
+            return tr("Seeders");
+        if (section == LeechersColumn)
+            return tr("Leechers");
+    }
+
+    return QVariant();
 }
 
 void SearchResultModel::setResults(const QVector<SearchHit>& results)

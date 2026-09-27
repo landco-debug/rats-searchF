@@ -178,10 +178,6 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
     refreshP2PStatus();
     updateNetworkStatus();
 
-    // Kick off a startup update check if enabled.
-    if (config && config->checkUpdatesOnStartup() && app_->updates()) {
-        QTimer::singleShot(5000, this, [this]() { app_->updates()->checkForUpdates(); });
-    }
 }
 
 MainWindow::~MainWindow()
@@ -311,7 +307,7 @@ void MainWindow::setupUi()
     resultsTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     resultsTableView->setAlternatingRowColors(true);
     resultsTableView->setSortingEnabled(true);
-    resultsTableView->horizontalHeader()->setStretchLastSection(true);
+    resultsTableView->horizontalHeader()->setStretchLastSection(false);
     resultsTableView->verticalHeader()->setVisible(false);
     resultsTableView->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     resultsTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -319,11 +315,22 @@ void MainWindow::setupUi()
     resultsTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     resultsTableView->setMouseTracking(true);
 
-    resultsTableView->setColumnWidth(0, 550); // Name
-    resultsTableView->setColumnWidth(1, 100); // Size
-    resultsTableView->setColumnWidth(2, 80); // Seeders
-    resultsTableView->setColumnWidth(3, 80); // Leechers
-    resultsTableView->setColumnWidth(4, 120); // Date
+    // Keep the release name wide. The compact swarm columns use the standard
+    // Russian torrent shorthand С/Л, and Date contains no time component.
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::NameColumn, QHeaderView::Stretch);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::SizeColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::SeedersColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::LeechersColumn, QHeaderView::Fixed);
+    resultsTableView->horizontalHeader()->setSectionResizeMode(
+        SearchResultModel::DateColumn, QHeaderView::Fixed);
+    resultsTableView->setColumnWidth(SearchResultModel::SizeColumn, 92);
+    resultsTableView->setColumnWidth(SearchResultModel::SeedersColumn, 42);
+    resultsTableView->setColumnWidth(SearchResultModel::LeechersColumn, 42);
+    resultsTableView->setColumnWidth(SearchResultModel::DateColumn, 96);
 
     searchTabLayout->addWidget(resultsTableView);
     tabWidget->addTab(searchTab, tr("Search Results"));
@@ -408,9 +415,6 @@ void MainWindow::setupMenuBar()
     });
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
-
-    QAction* checkUpdateAction = helpMenu->addAction(tr("Check for &Updates..."));
-    connect(checkUpdateAction, &QAction::triggered, this, &MainWindow::checkForUpdates);
 
     QAction* changelogAction = helpMenu->addAction(tr("📋 &Changelog"));
     connect(changelogAction, &QAction::triggered, this, &MainWindow::showChangelog);
@@ -888,12 +892,44 @@ void MainWindow::addVerifiedSourceResult(
     if (strictSearchHashes_.contains(incoming.hash))
         return;
 
-    Torrent torrent = incoming;
+    Torrent normalized = incoming;
+
+    // A source-first result has not been in the local index yet, so there is no
+    // local "added" timestamp on its very first appearance. Assign it before the
+    // initial insert/display; otherwise Date is blank until the same hash is
+    // searched a second time and read back from the database.
+    if (!normalized.added.isValid())
+        normalized.added = QDateTime::currentDateTimeUtc();
+
+    // The current strict-source contract requires a real release-specific Video
+    // field before a result is emitted. File-extension classification cannot run
+    // until Stage 14 resolves the .torrent/BEP 9 metadata, so classify that
+    // verified row as Video now instead of incorrectly filtering it as Unknown.
+    if (normalized.contentType == rats::domain::ContentType::Unknown
+        && !normalized.info.value(QStringLiteral("video")).toString().trimmed().isEmpty()) {
+        normalized.contentType = rats::domain::ContentType::Video;
+    }
+
+    Torrent torrent = normalized;
     if (app_->indexing()) {
-        const auto inserted = app_->indexing()->insert(incoming);
+        const auto inserted = app_->indexing()->insert(normalized);
         if (!inserted.success)
             return;
         torrent = inserted.torrent;
+
+        // Heal older exact-source rows that were stored before this first-pass
+        // classification fix.
+        if (torrent.contentType == rats::domain::ContentType::Unknown
+            && normalized.contentType != rats::domain::ContentType::Unknown) {
+            torrent.contentType = normalized.contentType;
+            if (app_->torrents()) {
+                app_->torrents()->updateClassification(
+                    torrent.hash, torrent.contentType, torrent.contentCategory);
+            }
+        }
+
+        if (!torrent.added.isValid())
+            torrent.added = normalized.added;
     }
 
     const SearchFilters filters = currentSearchFilters();
@@ -1142,6 +1178,16 @@ void MainWindow::performSearch(const QString& query)
     qInfo() << "Strict multi-source search started:" << trimmed.left(80);
     tabWidget->setCurrentIndex(0);
     searchResultModel->clearResults();
+
+    // A new query owns a new selection context. Do not leave the previous
+    // torrent's details/files visible while the new source results stream in.
+    ++fileMetadataRequestSerial_;
+    fileMetadataLoadingHash_.clear();
+    resultsTableView->clearSelection();
+    detailsPanel->hide();
+    filesWidget->clear();
+    filesWidget->hide();
+
     strictSearchHashes_.clear();
     strictSourcesRejected_ = 0;
     strictSourceErrors_.clear();

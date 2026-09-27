@@ -21,7 +21,7 @@ class Application;
  * @brief SettingsDialog - Application settings dialog
  *
  * Tab-based layout with logical grouping:
- * - General: language, theme, tray behavior, autostart, updates
+ * - General: language, theme, tray behavior, autostart
  * - Network: ports, P2P connections, replication, REST API
  * - Indexer: DHT indexer, trackers, spider performance
  * - Filters: name/regex, size, content type filters
@@ -83,7 +83,6 @@ private:
     QCheckBox* startMinimizedCheck_;
     QCheckBox* autoStartCheck_;
     QCheckBox* darkModeCheck_;
-    QCheckBox* checkUpdatesCheck_;
     QCheckBox* searchHistoryCheck_;
     QPushButton* clearSearchHistoryButton_;
 
