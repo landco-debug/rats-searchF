@@ -26,7 +26,7 @@ QNetworkRequest requestFor(const QUrl& url)
     request.setRawHeader("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.7");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
         QNetworkRequest::NoLessSafeRedirectPolicy);
-    request.setTransferTimeout(RuTrackerRuSearchClient::kTimeoutMs);
+    request.setTransferTimeout(20000);
     return request;
 }
 
