@@ -3,10 +3,12 @@
 
 #include "domain/torrent.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QQueue>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 class QNetworkAccessManager;
@@ -35,14 +37,18 @@ private:
         domain::Torrent torrent;
         QUrl detailUrl;
         QUrl torrentUrl;
+        QByteArray detailBody;
+        QUrl detailFinalUrl;
     };
 
     void fetchSearchPage(int generation);
     void processQueue(int generation);
-    void fetchTorrent(Job job, int generation);
     void fetchDetail(Job job, int generation);
+    void fetchTorrentFallback(Job job, int generation);
+    void finishCandidate(Job job, int generation, bool detailApplied);
     void finishIfIdle(int generation);
     void finishNow(int generation, const QString& error = QString());
+    void recordNetworkIssue(const QString& issue);
 
     QNetworkAccessManager* networkManager_ = nullptr;
     QSet<QNetworkReply*> replies_;
@@ -58,9 +64,12 @@ private:
     QString currentQuery_;
     QString currentSortKey_;
     QString currentContentType_;
+    QStringList networkIssues_;
 
-    static constexpr int kTimeoutMs = 15000;
-    static constexpr int kMaxConcurrent = 4;
+    // Detail-first makes the common candidate one HTTP request rather than a
+    // .torrent + detail pair. Keep only two exact-page verifications in flight:
+    // enough for interactive streaming without crawler-like request pressure.
+    static constexpr int kMaxConcurrent = 2;
 };
 
 } // namespace rats::net
