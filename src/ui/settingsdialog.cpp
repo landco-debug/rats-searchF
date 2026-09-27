@@ -314,7 +314,49 @@ QWidget* SettingsDialog::createIndexerTab()
 
     tabLayout->addWidget(indexerGroup);
 
-    // --- Authenticated tracker account ---
+    // --- Authenticated tracker account/session ---
+#ifdef __APPLE__
+    QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker browser session"));
+    QVBoxLayout* ruTrackerLayout = new QVBoxLayout(ruTrackerGroup);
+    ruTrackerLayout->setSpacing(10);
+
+    QLabel* ruTrackerHint = new QLabel(
+        tr("On macOS RuTracker authorization, Cloudflare clearance, search and "
+           "release pages use one persistent embedded WebKit session. Rats Search "
+           "does not store or replay a separate RuTracker username/password."));
+    ruTrackerHint->setWordWrap(true);
+    ruTrackerHint->setObjectName("hintLabel");
+    ruTrackerLayout->addWidget(ruTrackerHint);
+
+    ruTrackerBrowserStatus_ = new QLabel(
+        tr("Session status is checked automatically on the next RuTracker search."));
+    ruTrackerBrowserStatus_->setWordWrap(true);
+    ruTrackerLayout->addWidget(ruTrackerBrowserStatus_);
+
+    ruTrackerAuthorizeButton_ = new QPushButton(tr("Authorize / Re-login"));
+    ruTrackerAuthorizeButton_->setToolTip(
+        tr("Clear only the embedded RuTracker website session and open a fresh login window."));
+    ruTrackerLayout->addWidget(ruTrackerAuthorizeButton_, 0, Qt::AlignLeft);
+
+    if (auto* ruTracker = app_ ? app_->ruTrackerRuSearch() : nullptr) {
+        connect(ruTrackerAuthorizeButton_, &QPushButton::clicked, this,
+            [this, ruTracker]() {
+                ruTrackerAuthorizeButton_->setEnabled(false);
+                ruTrackerBrowserStatus_->setText(
+                    tr("Opening a fresh RuTracker browser session…"));
+                ruTracker->reloginInBrowser();
+            });
+        connect(ruTracker,
+            &rats::net::RuTrackerRuSearchClient::browserAuthorizationChanged,
+            this, [this](bool authorized, const QString& message) {
+                Q_UNUSED(authorized);
+                ruTrackerBrowserStatus_->setText(message);
+                ruTrackerAuthorizeButton_->setEnabled(true);
+            });
+    }
+
+    tabLayout->addWidget(ruTrackerGroup);
+#else
     QGroupBox* ruTrackerGroup = new QGroupBox(tr("RuTracker account"));
     QFormLayout* ruTrackerLayout = new QFormLayout(ruTrackerGroup);
     ruTrackerLayout->setSpacing(10);
@@ -329,14 +371,13 @@ QWidget* SettingsDialog::createIndexerTab()
     ruTrackerLayout->addRow(tr("Password:"), ruTrackerPasswordEdit_);
 
     QLabel* ruTrackerHint = new QLabel(
-        tr("RuTracker search is enabled only when both fields are set. "
-           "The password is stored in this app's local macOS preferences and "
-           "is not written to rats.json or exposed through the REST API."));
+        tr("RuTracker search is enabled only when both fields are set."));
     ruTrackerHint->setWordWrap(true);
     ruTrackerHint->setObjectName("hintLabel");
     ruTrackerLayout->addRow(ruTrackerHint);
 
     tabLayout->addWidget(ruTrackerGroup);
+#endif
 
     // --- Spider Performance ---
     QGroupBox* perfGroup = new QGroupBox(tr("Spider Performance"));
@@ -663,11 +704,13 @@ void SettingsDialog::loadSettings()
     trackersCheck_->setChecked(config_->trackersEnabled());
     walkIntervalSpin_->setValue(config_->spiderWalkInterval());
 
+#ifndef __APPLE__
     QSettings trackerSettings(QStringLiteral("RatsSearch"), QStringLiteral("RatsSearch"));
     ruTrackerUsernameEdit_->setText(
         trackerSettings.value(QStringLiteral("rutracker/username")).toString());
     ruTrackerPasswordEdit_->setText(
         trackerSettings.value(QStringLiteral("rutracker/password")).toString());
+#endif
 
     // Filters
     maxFilesSpin_->setValue(config_->filtersMaxFiles());
@@ -753,12 +796,14 @@ void SettingsDialog::saveSettings()
     config_->setTrackersEnabled(trackersCheck_->isChecked());
     config_->setSpiderWalkInterval(walkIntervalSpin_->value());
 
+#ifndef __APPLE__
     const QString ruTrackerUsername = ruTrackerUsernameEdit_->text().trimmed();
     const QString ruTrackerPassword = ruTrackerPasswordEdit_->text();
     settings.setValue(QStringLiteral("rutracker/username"), ruTrackerUsername);
     settings.setValue(QStringLiteral("rutracker/password"), ruTrackerPassword);
     if (auto* ruTracker = app_->ruTrackerRuSearch())
         ruTracker->setCredentials(ruTrackerUsername, ruTrackerPassword);
+#endif
 
     // Save Filters
     config_->setFiltersMaxFiles(maxFilesSpin_->value());
