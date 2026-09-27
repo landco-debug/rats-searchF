@@ -480,34 +480,15 @@ bool RuTrackerRuSource::isStrictComplete(const domain::Torrent& torrent)
         return false;
     }
 
+    // Exact-source admission is about provenance and identity, not whether our
+    // heuristic field extractor happened to recognize every codec/track label.
+    // A concrete topic page + exact magnet hash + release-specific description
+    // is enough to prove this is the selected RuTracker release. Parsed quality,
+    // video/audio and subtitle fields remain useful enrichment, but are no
+    // longer allowed to hide otherwise valid exact releases from Search Results.
     const QString description
         = info.value(QStringLiteral("description")).toString().trimmed();
-    if (description.size() < 160)
-        return false;
-
-    const bool hasQuality
-        = !info.value(QStringLiteral("quality")).toString().isEmpty();
-    const bool hasVideo
-        = !info.value(QStringLiteral("video")).toString().isEmpty();
-    const bool hasAudio
-        = !info.value(QStringLiteral("audioTracks")).toArray().isEmpty();
-
-    if (torrent.contentType != domain::ContentType::Unknown
-        && !info.value(QStringLiteral("contentTypeEvidence")).toString().isEmpty()) {
-        if (torrent.contentType == domain::ContentType::Video)
-            return hasQuality && hasVideo && hasAudio;
-        if (torrent.contentType == domain::ContentType::Audio)
-            return hasAudio;
-        return true;
-    }
-
-    if (torrent.contentType == domain::ContentType::Video
-        || hasVideo || hasQuality) {
-        return hasQuality && hasVideo && hasAudio;
-    }
-    if (torrent.contentType == domain::ContentType::Audio)
-        return hasAudio;
-    return true;
+    return description.size() >= 60;
 }
 
 } // namespace rats::net
