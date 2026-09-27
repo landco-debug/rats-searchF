@@ -379,8 +379,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          # pull_request workflows normally checkout GitHub's temporary merge
+          # commit. For user-testable macOS artifacts we need the exact branch
+          # HEAD that AGENTS.md and the conversation refer to.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: recursive
           persist-credentials: false
+
+      - name: Verify checked-out source revision
+        run: |
+          EXPECTED="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "Expected source: $EXPECTED"
+          echo "Checked out:     $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
 
       - name: Install Ninja
         run: brew install ninja
@@ -516,11 +528,15 @@ jobs:
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
+            SOURCE_SHA="${{ github.sha }}"
           else
-            VERSION="dev-$(echo ${{ github.sha }} | cut -c1-7)"
+            SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+            VERSION="head-$(echo "$SOURCE_SHA" | cut -c1-7)"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "SOURCE_SHA=$SOURCE_SHA" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+          echo "Source revision: $SOURCE_SHA"
 
       - name: Create DMG
         run: |
@@ -530,6 +546,7 @@ jobs:
           # Create a temporary directory for DMG contents
           mkdir -p dmg-contents
           cp -R build/bin/RatsSearch.app "dmg-contents/Rats Search.app"
+          printf '%s\n' "source_sha=${{ steps.version.outputs.SOURCE_SHA }}" > "dmg-contents/BUILD-REVISION.txt"
           ln -s /Applications dmg-contents/Applications
           
           # Create DMG

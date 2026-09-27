@@ -33,6 +33,95 @@
 using rats::domain::ContentCategory;
 using rats::domain::ContentType;
 
+namespace {
+
+QUrl verifiedExactSourceUrl(const QJsonObject& info)
+{
+    if (!info.value(QStringLiteral("sourceVerified")).toBool(false))
+        return {};
+
+    const QString provider
+        = info.value(QStringLiteral("sourceProvider")).toString();
+    const QUrl url(info.value(QStringLiteral("sourceUrl")).toString());
+    if (!url.isValid()
+        || (url.scheme() != QStringLiteral("https")
+            && url.scheme() != QStringLiteral("http"))) {
+        return {};
+    }
+
+    if (provider == QStringLiteral("rutor")) {
+        const bool hostOk
+            = url.host().compare(QStringLiteral("rutor.info"), Qt::CaseInsensitive) == 0
+            || url.host().compare(QStringLiteral("rutor.is"), Qt::CaseInsensitive) == 0;
+        if (!hostOk || !url.path().startsWith(QStringLiteral("/torrent/")))
+            return {};
+        return url;
+    }
+
+    if (provider == QStringLiteral("rutracker-ru")) {
+        if (url.host().compare(
+                QStringLiteral("rutracker.ru"), Qt::CaseInsensitive) != 0
+            || !url.path().endsWith(QStringLiteral("/viewtopic.php"))) {
+            return {};
+        }
+        return url;
+    }
+
+    if (provider == QStringLiteral("megapeer")) {
+        if (url.host().compare(
+                QStringLiteral("megapeer.vip"), Qt::CaseInsensitive) != 0
+            || !url.path().startsWith(QStringLiteral("/torrent/"))) {
+            return {};
+        }
+        return url;
+    }
+
+    if (provider == QStringLiteral("nnmclub")) {
+        const QString host = url.host().toLower();
+        if ((host != QStringLiteral("nnmclub.to")
+                && host != QStringLiteral("www.nnmclub.to"))
+            || !url.path().endsWith(QStringLiteral("/forum/viewtopic.php"))) {
+            return {};
+        }
+        return url;
+    }
+
+    return {};
+}
+
+QString exactSourceDisplayName(const QJsonObject& info)
+{
+    const QString provider
+        = info.value(QStringLiteral("sourceProvider")).toString();
+    if (provider == QStringLiteral("rutor"))
+        return QStringLiteral("Rutor");
+    if (provider == QStringLiteral("rutracker-ru"))
+        return QStringLiteral("RuTracker.RU");
+    if (provider == QStringLiteral("megapeer"))
+        return QStringLiteral("MegaPeer");
+    if (provider == QStringLiteral("nnmclub"))
+        return QStringLiteral("NNM-Club");
+    return QString();
+}
+
+bool isVerifiedExactSourceInfo(const QJsonObject& info)
+{
+    return verifiedExactSourceUrl(info).isValid();
+}
+
+QStringList jsonStringList(const QJsonArray& values)
+{
+    QStringList result;
+    for (const QJsonValue& value : values) {
+        const QString text = value.toString().trimmed();
+        if (!text.isEmpty())
+            result.append(text);
+    }
+    return result;
+}
+
+} // namespace
+
 TorrentDetailsPanel::TorrentDetailsPanel(QWidget* parent) : QWidget(parent)
 {
     setupUi();
@@ -489,7 +578,10 @@ void TorrentDetailsPanel::setTorrent(const rats::domain::Torrent& torrent)
 
     // Info
     sizeLabel_->setText(rats::ui::formatSize(torrent.size));
-    filesLabel_->setText(tr("%n file(s)", nullptr, torrent.files));
+    const bool exactSource = isVerifiedExactSourceInfo(torrent.info);
+    filesLabel_->setText(exactSource && torrent.files == 0
+            ? QStringLiteral("-")
+            : tr("%n file(s)", nullptr, torrent.files));
     dateLabel_->setText(torrent.added.isValid() ? torrent.added.toString("MMMM d, yyyy") : "-");
 
     // Category — display the human content type + optional finer category.
@@ -868,6 +960,19 @@ void TorrentDetailsPanel::requestTrackerRefresh()
         return;
 
     auto* trackers = app_->trackers();
+
+    // A verified source-first record already carries the concrete release page
+    // that produced this exact info-hash. It is terminal for rich-info resolution:
+    // refresh swarm counts if possible, but never launch the old title/hash
+    // fallback chain (RuTracker/Nyaa, peers, Magnetz, DHT) for this row.
+    if (isVerifiedExactSourceInfo(currentTorrent_.info)) {
+        if (trackers)
+            trackers->checkCounts(currentHash_);
+        infoResolved_ = true;
+        updateTrackerInfoDisplay(currentTorrent_.info);
+        return;
+    }
+
     if (!trackers)
         return;
 
@@ -1228,61 +1333,104 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
     trackerInfoLoadingLabel_->hide();
     retryInfoButton_->hide();
 
-    const QString source = info.value("metadataSource").toString();
-    if (!source.isEmpty()) {
-        trackerInfoSourceLabel_->setText(tr("Source: %1").arg(source));
-        trackerInfoSourceLabel_->show();
-    } else {
-        trackerInfoSourceLabel_->hide();
-    }
+    const QUrl exactSourceUrl = verifiedExactSourceUrl(info);
+    const bool exactSource = exactSourceUrl.isValid();
 
-    const QJsonArray trackerUrls = info.value("trackerUrls").toArray();
-    if (!trackerUrls.isEmpty()) {
-        QStringList urls;
-        for (const QJsonValue& value : trackerUrls) {
-            const QString url = value.toString();
-            if (!url.isEmpty())
-                urls.append(url);
+    if (exactSource) {
+        const QString sourceName = exactSourceDisplayName(info);
+        const int topicId = info.value(QStringLiteral("sourceTopicId")).toInt();
+        trackerInfoSourceLabel_->setText(topicId > 0
+                ? tr("Source: %1 · exact release #%2 · info hash verified")
+                      .arg(sourceName)
+                      .arg(topicId)
+                : tr("Source: %1 · exact release page · info hash verified")
+                      .arg(sourceName));
+        trackerInfoSourceLabel_->show();
+
+        QStringList facts;
+        const QString quality = info.value(QStringLiteral("quality")).toString().trimmed();
+        const QString video = info.value(QStringLiteral("video")).toString().trimmed();
+        const QStringList audio = jsonStringList(info.value(QStringLiteral("audioTracks")).toArray());
+        const QString subtitles = info.value(QStringLiteral("subtitles")).toString().trimmed();
+
+        if (!quality.isEmpty())
+            facts << tr("Quality: %1").arg(quality);
+        if (!video.isEmpty())
+            facts << tr("Video: %1").arg(video);
+        if (!audio.isEmpty()) {
+            facts << tr("Audio tracks:");
+            for (int i = 0; i < audio.size(); ++i)
+                facts << QStringLiteral("  %1. %2").arg(i + 1).arg(audio.at(i));
         }
-        trackerUrlsLabel_->setText(tr("Trackers:\n%1").arg(urls.join(QLatin1Char('\n'))));
+        if (!subtitles.isEmpty())
+            facts << tr("Subtitles: %1").arg(subtitles);
+
+        facts << tr("Exact release page: %1").arg(exactSourceUrl.toString());
+        trackerUrlsLabel_->setText(facts.join(QLatin1Char('\n')));
         trackerUrlsLabel_->show();
     } else {
-        trackerUrlsLabel_->hide();
+        const QString source = info.value("metadataSource").toString();
+        if (!source.isEmpty()) {
+            trackerInfoSourceLabel_->setText(tr("Source: %1").arg(source));
+            trackerInfoSourceLabel_->show();
+        } else {
+            trackerInfoSourceLabel_->hide();
+        }
+
+        const QJsonArray trackerUrls = info.value("trackerUrls").toArray();
+        if (!trackerUrls.isEmpty()) {
+            QStringList urls;
+            for (const QJsonValue& value : trackerUrls) {
+                const QString url = value.toString();
+                if (!url.isEmpty())
+                    urls.append(url);
+            }
+            trackerUrlsLabel_->setText(tr("Trackers:\n%1").arg(urls.join(QLatin1Char('\n'))));
+            trackerUrlsLabel_->show();
+        } else {
+            trackerUrlsLabel_->hide();
+        }
     }
 
-    // Poster image
-    QString posterUrl = info["poster"].toString();
-    if (!posterUrl.isEmpty()) {
+    // Poster image. Exact source snapshots never invent a poster; one
+    // is shown only when the stored snapshot actually contains a concrete URL.
+    const QString posterUrl = info.value(QStringLiteral("poster")).toString();
+    if (!posterUrl.isEmpty())
         loadPosterImage(posterUrl);
-    } else {
+    else
         posterLabel_->hide();
-    }
 
-    // Description. Raw BEP 9 metadata often has only a comment; otherwise show
-    // a concise note that the fallback succeeded rather than pretending there is
-    // a tracker-page description.
-    QString description = info["description"].toString();
+    // The exact-source description is the text captured from that concrete
+    // release page. Legacy metadata annotations are appended only for old
+    // fallback records, never to a verified source-first snapshot.
+    QString description = info.value(QStringLiteral("description")).toString();
     if (description.isEmpty())
-        description = info["metadataNote"].toString();
+        description = info.value(QStringLiteral("metadataNote")).toString();
 
-    QStringList metadataDetails;
-    const QString createdBy = info.value("createdBy").toString();
-    if (!createdBy.isEmpty())
-        metadataDetails << tr("Created by: %1").arg(createdBy);
-    const qint64 creationDate = info.value("creationDate").toVariant().toLongLong();
-    if (creationDate > 0)
-        metadataDetails << tr("Created: %1").arg(QDateTime::fromSecsSinceEpoch(creationDate).toString("yyyy-MM-dd"));
-    if (info.contains("private"))
-        metadataDetails << (info.value("private").toBool() ? tr("Private torrent") : tr("Public torrent"));
-    if (info.contains("verified"))
-        metadataDetails << (info.value("verified").toBool() ? tr("Verified by public index") : tr("Not verified by public index"));
-    if (info.contains("active") && !info.value("active").toBool())
-        metadataDetails << tr("Marked inactive by public index");
-    if (!metadataDetails.isEmpty()) {
-        if (!description.isEmpty())
-            description += QStringLiteral("\n\n");
-        description += metadataDetails.join(QLatin1Char('\n'));
+    if (!exactSource) {
+        QStringList metadataDetails;
+        const QString createdBy = info.value("createdBy").toString();
+        if (!createdBy.isEmpty())
+            metadataDetails << tr("Created by: %1").arg(createdBy);
+        const qint64 creationDate = info.value("creationDate").toVariant().toLongLong();
+        if (creationDate > 0)
+            metadataDetails << tr("Created: %1").arg(
+                QDateTime::fromSecsSinceEpoch(creationDate).toString("yyyy-MM-dd"));
+        if (info.contains("private"))
+            metadataDetails << (info.value("private").toBool() ? tr("Private torrent") : tr("Public torrent"));
+        if (info.contains("verified"))
+            metadataDetails << (info.value("verified").toBool()
+                    ? tr("Verified by public index")
+                    : tr("Not verified by public index"));
+        if (info.contains("active") && !info.value("active").toBool())
+            metadataDetails << tr("Marked inactive by public index");
+        if (!metadataDetails.isEmpty()) {
+            if (!description.isEmpty())
+                description += QStringLiteral("\n\n");
+            description += metadataDetails.join(QLatin1Char('\n'));
+        }
     }
+
     if (!description.isEmpty()) {
         fullDescription_ = description;
         descriptionExpanded_ = false;
@@ -1301,65 +1449,78 @@ void TorrentDetailsPanel::updateTrackerInfoDisplay(const QJsonObject& info)
         descriptionToggle_->hide();
     }
 
-    // Tracker links - remove old buttons first (keep the stretch at end)
+    // Remove old buttons first (keep the stretch at end).
     while (trackerLinksLayout_->count() > 1) {
         QLayoutItem* item = trackerLinksLayout_->takeAt(0);
-        if (item->widget()) {
+        if (item->widget())
             delete item->widget();
-        }
         delete item;
     }
 
     bool hasLinks = false;
 
-    // RuTracker link
-    int rutrackerThreadId = info["rutrackerThreadId"].toInt();
-    if (rutrackerThreadId > 0) {
-        QPushButton* rtBtn = new QPushButton(tr("🔗 RuTracker"));
-        rtBtn->setObjectName("trackerLinkButton");
-        rtBtn->setCursor(Qt::PointingHandCursor);
-        rtBtn->setToolTip(QString("https://rutracker.org/forum/viewtopic.php?t=%1").arg(rutrackerThreadId));
-        connect(rtBtn, &QPushButton::clicked, this, [rutrackerThreadId]() {
-            QDesktopServices::openUrl(
-                QUrl(QString("https://rutracker.org/forum/viewtopic.php?t=%1").arg(rutrackerThreadId)));
+    if (exactSource) {
+        // This is the only web link shown for a verified-source result. It is
+        // the concrete page captured together with this torrent's info-hash,
+        // not a search-by-title shortcut.
+        const QString sourceName = exactSourceDisplayName(info);
+        QPushButton* sourceBtn
+            = new QPushButton(tr("🔗 Open exact %1 release").arg(sourceName));
+        sourceBtn->setObjectName("trackerLinkButton");
+        sourceBtn->setCursor(Qt::PointingHandCursor);
+        sourceBtn->setToolTip(exactSourceUrl.toString());
+        connect(sourceBtn, &QPushButton::clicked, this, [exactSourceUrl]() {
+            QDesktopServices::openUrl(exactSourceUrl);
         });
-        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, rtBtn);
+        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, sourceBtn);
         hasLinks = true;
+    } else {
+        // Legacy links remain available only for legacy/non-source-first rows.
+        const int rutrackerThreadId = info["rutrackerThreadId"].toInt();
+        if (rutrackerThreadId > 0) {
+            QPushButton* rtBtn = new QPushButton(tr("🔗 RuTracker"));
+            rtBtn->setObjectName("trackerLinkButton");
+            rtBtn->setCursor(Qt::PointingHandCursor);
+            rtBtn->setToolTip(
+                QString("https://rutracker.org/forum/viewtopic.php?t=%1").arg(rutrackerThreadId));
+            connect(rtBtn, &QPushButton::clicked, this, [rutrackerThreadId]() {
+                QDesktopServices::openUrl(
+                    QUrl(QString("https://rutracker.org/forum/viewtopic.php?t=%1").arg(rutrackerThreadId)));
+            });
+            trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, rtBtn);
+            hasLinks = true;
+        }
+
+        const int nyaaThreadId = info["nyaaThreadId"].toInt();
+        if (nyaaThreadId > 0) {
+            QPushButton* nyaaBtn = new QPushButton(tr("🔗 Nyaa"));
+            nyaaBtn->setObjectName("trackerLinkButton");
+            nyaaBtn->setCursor(Qt::PointingHandCursor);
+            nyaaBtn->setToolTip(QString("https://nyaa.si/view/%1").arg(nyaaThreadId));
+            connect(nyaaBtn, &QPushButton::clicked, this, [nyaaThreadId]() {
+                QDesktopServices::openUrl(QUrl(QString("https://nyaa.si/view/%1").arg(nyaaThreadId)));
+            });
+            trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, nyaaBtn);
+            hasLinks = true;
+        }
+
+        const QString magnetzUrl = info.value("magnetzUrl").toString();
+        if (!magnetzUrl.isEmpty()) {
+            QPushButton* magnetzBtn = new QPushButton(tr("🔗 Magnetz"));
+            magnetzBtn->setObjectName("trackerLinkButton");
+            magnetzBtn->setCursor(Qt::PointingHandCursor);
+            magnetzBtn->setToolTip(magnetzUrl);
+            connect(magnetzBtn, &QPushButton::clicked, this, [magnetzUrl]() {
+                QDesktopServices::openUrl(QUrl(magnetzUrl));
+            });
+            trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, magnetzBtn);
+            hasLinks = true;
+        }
     }
 
-    // Nyaa link
-    int nyaaThreadId = info["nyaaThreadId"].toInt();
-    if (nyaaThreadId > 0) {
-        QPushButton* nyaaBtn = new QPushButton(tr("🔗 Nyaa"));
-        nyaaBtn->setObjectName("trackerLinkButton");
-        nyaaBtn->setCursor(Qt::PointingHandCursor);
-        nyaaBtn->setToolTip(QString("https://nyaa.si/view/%1").arg(nyaaThreadId));
-        connect(nyaaBtn, &QPushButton::clicked, this, [nyaaThreadId]() {
-            QDesktopServices::openUrl(QUrl(QString("https://nyaa.si/view/%1").arg(nyaaThreadId)));
-        });
-        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, nyaaBtn);
-        hasLinks = true;
-    }
-
-    // Public-index link (exact hash lookup fallback).
-    const QString magnetzUrl = info.value("magnetzUrl").toString();
-    if (!magnetzUrl.isEmpty()) {
-        QPushButton* magnetzBtn = new QPushButton(tr("🔗 Magnetz"));
-        magnetzBtn->setObjectName("trackerLinkButton");
-        magnetzBtn->setCursor(Qt::PointingHandCursor);
-        magnetzBtn->setToolTip(magnetzUrl);
-        connect(magnetzBtn, &QPushButton::clicked, this, [magnetzUrl]() {
-            QDesktopServices::openUrl(QUrl(magnetzUrl));
-        });
-        trackerLinksLayout_->insertWidget(trackerLinksLayout_->count() - 1, magnetzBtn);
-        hasLinks = true;
-    }
-
-    // Content category from tracker
-    QString trackerCategory = info["contentCategory"].toString();
-    if (!trackerCategory.isEmpty()) {
+    const QString trackerCategory = info.value("contentCategory").toString();
+    if (!trackerCategory.isEmpty())
         categoryLabel_->setText(trackerCategory);
-    }
 
     trackerLinksWidget_->setVisible(hasLinks);
 }
