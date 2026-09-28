@@ -9,6 +9,25 @@
 using rats::domain::SearchHit;
 using rats::domain::Torrent;
 
+namespace {
+
+QString sourceDisplayName(const QString& provider)
+{
+    if (provider == QStringLiteral("rutor"))
+        return QStringLiteral("Rutor");
+    if (provider == QStringLiteral("rutracker-ru"))
+        return QStringLiteral("RuTracker.RU");
+    if (provider == QStringLiteral("megapeer"))
+        return QStringLiteral("MegaPeer");
+    if (provider == QStringLiteral("nnmclub"))
+        return QStringLiteral("NNM-Club");
+    if (provider == QStringLiteral("kinozal"))
+        return QStringLiteral("Kinozal");
+    return provider;
+}
+
+} // namespace
+
 SearchResultModel::SearchResultModel(QObject* parent) : QAbstractTableModel(parent) { }
 
 SearchResultModel::~SearchResultModel() { }
@@ -49,7 +68,9 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
         case LeechersColumn:
             return torrent.leechers;
         case DateColumn:
-            return rats::ui::formatDate(torrent.added);
+            return torrent.added.isValid()
+                ? torrent.added.toLocalTime().date().toString(QStringLiteral("yyyy-MM-dd"))
+                : QString();
         default:
             return QVariant();
         }
@@ -64,12 +85,17 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
             return Qt::AlignLeft;
         }
     } else if (role == Qt::ToolTipRole) {
-        QString tip = QString("Info Hash: %1\nSeeders: %2\nLeechers: %3\nSize: %4\nFiles: %5")
-                          .arg(torrent.hash)
-                          .arg(torrent.seeders)
-                          .arg(torrent.leechers)
-                          .arg(rats::ui::formatSize(torrent.size))
-                          .arg(torrent.files);
+        const QString provider = torrent.info
+            .value(QStringLiteral("sourceProvider")).toString();
+        QString tip;
+        if (!provider.isEmpty())
+            tip += tr("Source: %1\n").arg(sourceDisplayName(provider));
+        tip += QString("Info Hash: %1\nSeeders: %2\nLeechers: %3\nSize: %4\nFiles: %5")
+                   .arg(torrent.hash)
+                   .arg(torrent.seeders)
+                   .arg(torrent.leechers)
+                   .arg(rats::ui::formatSize(torrent.size))
+                   .arg(torrent.files);
         // The row is tinted for these; say why, and name the peer it came from.
         if (hit.remote) {
             tip += QLatin1Char('\n')
@@ -87,6 +113,8 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
         return hit.matchingPaths;
     } else if (role == RemoteRole) {
         return hit.remote;
+    } else if (role == SourceProviderRole) {
+        return torrent.info.value(QStringLiteral("sourceProvider")).toString();
     }
 
     return QVariant();
@@ -94,24 +122,40 @@ QVariant SearchResultModel::data(const QModelIndex& index, int role) const
 
 QVariant SearchResultModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
+    if (orientation != Qt::Horizontal)
         return QVariant();
+
+    if (role == Qt::DisplayRole) {
+        switch (section) {
+        case NameColumn:
+            return tr("Name");
+        case SizeColumn:
+            return tr("Size");
+        case SeedersColumn:
+        case LeechersColumn:
+            return QString();
+        case DateColumn:
+            return tr("Date");
+        default:
+            return QVariant();
+        }
     }
 
-    switch (section) {
-    case NameColumn:
-        return tr("Name");
-    case SizeColumn:
-        return tr("Size");
-    case SeedersColumn:
-        return tr("Seeders");
-    case LeechersColumn:
-        return tr("Leechers");
-    case DateColumn:
-        return tr("Date");
-    default:
-        return QVariant();
+    if (role == Qt::TextAlignmentRole
+        && (section == SeedersColumn
+            || section == LeechersColumn
+            || section == DateColumn)) {
+        return Qt::AlignCenter;
     }
+
+    if (role == Qt::ToolTipRole) {
+        if (section == SeedersColumn)
+            return tr("Seeders");
+        if (section == LeechersColumn)
+            return tr("Leechers");
+    }
+
+    return QVariant();
 }
 
 void SearchResultModel::setResults(const QVector<SearchHit>& results)

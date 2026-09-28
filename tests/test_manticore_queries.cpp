@@ -53,6 +53,7 @@ private slots:
     void testSearchByHash();
     void testUpdateTrackerCounts();
     void testMergeInfoSignals();
+    void testVerifiedSourceReplacesStaleInfo();
     void testStatistics();
     void testRecent();
     void testTop();
@@ -279,6 +280,54 @@ void TestManticoreQueries::testMergeInfoSignals()
     QVERIFY(got.has_value());
     QCOMPARE(got->info.value(QStringLiteral("description")).toString(), QStringLiteral("fallback metadata"));
     QCOMPARE(got->info.value(QStringLiteral("metadataSource")).toString(), QStringLiteral("test"));
+}
+
+
+void TestManticoreQueries::testVerifiedSourceReplacesStaleInfo()
+{
+    Torrent original = makeTorrent(770010, "Багровый");
+    original.info = QJsonObject {
+        { QStringLiteral("description"), QStringLiteral("old guessed description") },
+        { QStringLiteral("rutrackerThreadId"), 999999 },
+        { QStringLiteral("metadataSource"), QStringLiteral("legacy fallback") },
+    };
+
+    const auto first = indexing_->insert(original);
+    QVERIFY2(first.success, qPrintable(first.error));
+    QVERIFY(waitForTorrent(original.hash));
+
+    Torrent verified = original;
+    verified.name = QStringLiteral(
+        "Багровый прилив / Crimson Tide (1995) BDRip 1080p");
+    verified.info = QJsonObject {
+        { QStringLiteral("sourceProvider"), QStringLiteral("rutracker-ru") },
+        { QStringLiteral("sourceTopicId"), 471557 },
+        { QStringLiteral("sourceUrl"), QStringLiteral("https://rutracker.org/forum/viewtopic.php?t=471557") },
+        { QStringLiteral("sourceVerified"), true },
+        { QStringLiteral("strictComplete"), true },
+        { QStringLiteral("description"), QStringLiteral("exact Rutor release description") },
+        { QStringLiteral("quality"), QStringLiteral("BDRip-AVC 1080p") },
+        { QStringLiteral("video"), QStringLiteral("AVC / H.264 1920x1080") },
+        { QStringLiteral("audioTracks"), QJsonArray {
+            QStringLiteral("Аудио #1: Russian AC3 5.1")
+        } },
+    };
+
+    const auto merged = indexing_->insert(verified);
+    QVERIFY2(merged.success, qPrintable(merged.error));
+    QVERIFY(merged.alreadyExists);
+
+    const auto stored = repo_->get(original.hash);
+    QVERIFY(stored.has_value());
+    QVERIFY(stored->info.value(QStringLiteral("sourceVerified")).toBool());
+    QCOMPARE(stored->info.value(QStringLiteral("sourceUrl")).toString(),
+        QStringLiteral("https://rutracker.org/forum/viewtopic.php?t=471557"));
+    QCOMPARE(stored->name,
+        QStringLiteral("Багровый прилив / Crimson Tide (1995) BDRip 1080p"));
+    QCOMPARE(stored->info.value(QStringLiteral("description")).toString(),
+        QStringLiteral("exact Rutor release description"));
+    QVERIFY2(!stored->info.contains(QStringLiteral("rutrackerThreadId")),
+        "stale post-hoc source link must not survive an exact verified source");
 }
 
 void TestManticoreQueries::testStatistics()
