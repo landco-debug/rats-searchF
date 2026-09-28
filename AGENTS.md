@@ -1642,3 +1642,23 @@ Handoff:
   7. if a KZ row appears, selecting it must still show the exact release link,
      detailed description and exact hash/file metadata.
 
+### Stage 39 — preserve Kinozal detail URL before moving search job
+
+Commit message: `fix: preserve Kinozal detail URL before callback capture`.
+
+Static audit of Stage 38 after repeated reports of no KZ rows found the same
+C++ argument-evaluation defect previously fixed for RuTracker in Stage 30:
+`browser_->get(job.detailUrl, [job = std::move(job)]...)` reads and moves
+`job` in two separate function arguments. C++ does not guarantee their order;
+Clang may move the job first and then pass an empty QUrl to WebKit. Kinozal
+marks each attempted detail as a request failure, never reaches the same-ID
+AJAX hash endpoint, and therefore emits no verified KZ releases.
+
+Copy `job.detailUrl` to a local QUrl before moving the job into the callback.
+The existing exact detail ID, server-details info-hash and strict-completeness
+checks remain mandatory. This fixes a proven defect in the code path, but the
+user's Stage 38 runtime log is not yet available; do not claim that it was the
+only failure until macOS Sequoia runtime verification.
+
+Build from Stage 38 HEAD `77d2c233dbe9db08f885d3d703291c7c64c4dc5e`;
+keep the Stage 39 PR draft and do not merge before user acceptance.

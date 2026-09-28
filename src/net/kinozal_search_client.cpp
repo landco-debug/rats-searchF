@@ -251,7 +251,11 @@ void KinozalSearchClient::fetchDetail(
     Q_UNUSED(job);
     Q_UNUSED(generation);
 #else
-    browser_->get(job.detailUrl,
+    // Keep the URL independent of the job moved into the callback. C++ does
+    // not guarantee that get()'s first argument is evaluated before the
+    // lambda capture, and Clang may otherwise pass a moved-from empty URL.
+    const QUrl detailUrl = job.detailUrl;
+    browser_->get(detailUrl,
         [this, job = std::move(job), generation](
             const QByteArray& body, const QUrl& finalUrl,
             const QString& error) mutable {
