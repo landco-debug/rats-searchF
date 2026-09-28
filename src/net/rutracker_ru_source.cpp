@@ -441,6 +441,9 @@ bool RuTrackerRuSource::applyDetailPage(
     QJsonObject info = torrent.info;
     info[QStringLiteral("sourceProvider")] = QStringLiteral("rutracker-ru");
     info[QStringLiteral("sourceVerified")] = true;
+    const QString sourceMagnet = sourceparse::magnetForHash(html, hash);
+    if (!sourceMagnet.isEmpty())
+        info[QStringLiteral("sourceMagnet")] = sourceMagnet;
     info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("description")] = description;
 

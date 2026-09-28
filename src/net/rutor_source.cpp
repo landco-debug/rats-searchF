@@ -1,6 +1,7 @@
 #include "net/rutor_source.h"
 
 #include "common/infohash.h"
+#include "net/source_parse_utils.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -306,6 +307,7 @@ QVector<domain::Torrent> RutorSource::parseSearchPage(
         info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
         info[QStringLiteral("sourceTopicId")] = detail.captured(2).toInt();
         info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
+        info[QStringLiteral("sourceMagnet")] = decodeEntities(magnet.captured(1));
         if (download.hasMatch()) {
             const QUrl torrentUrl = resolveUrl(pageUrl, download.captured(1));
             if (torrentUrl.isValid())
@@ -362,6 +364,9 @@ bool RutorSource::applyDetailPage(
     QJsonObject info = torrent.info;
     info[QStringLiteral("sourceProvider")] = QStringLiteral("rutor");
     info[QStringLiteral("sourceVerified")] = true;
+    const QString detailMagnet = sourceparse::magnetForHash(html, torrent.hash);
+    if (!detailMagnet.isEmpty())
+        info[QStringLiteral("sourceMagnet")] = detailMagnet;
 
     QUrl sourceUrl = finalUrl;
     if (!sourceUrl.isValid() || !sourceUrl.path().startsWith(QStringLiteral("/torrent/")))

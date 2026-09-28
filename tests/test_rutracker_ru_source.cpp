@@ -175,7 +175,7 @@ void TestRuTrackerRuSource::detailPageCompletesIdentityFromExactMagnet()
       <html><body>
       <h1 id="topic-title">Under Siege / В осаде (1992) BDRip 1080p</h1>
       <table class="attach"><tr><td>
-      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef">magnet</a>
+      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef&amp;tr=udp://tracker.example.org:6969/announce">magnet</a>
       </td></tr></table>
       <div class="post_body">
         Качество: BDRip 1080p<span class="post-br"></span>
@@ -218,7 +218,7 @@ void TestRuTrackerRuSource::detailPageKeepsFullNestedTopicTitle()
         <b>Багровый</b> прилив / Crimson Tide (1995)
         <span class="release-note">BDRip 1080p</span>
       </a>
-      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef">magnet</a>
+      <a class="magnet-link" href="magnet:?xt=urn:btih:89abcdef0123456789abcdef0123456789abcdef&amp;tr=udp://tracker.example.org:6969/announce">magnet</a>
       <div class="post_body">
       Качество: BDRip 1080p<span class="post-br"></span>
       Видео: AVC / H.264, 1920x1080<span class="post-br"></span>
@@ -235,6 +235,7 @@ void TestRuTrackerRuSource::detailPageKeepsFullNestedTopicTitle()
     QCOMPARE(t.name,
         QStringLiteral("Багровый прилив / Crimson Tide (1995) BDRip 1080p"));
     QVERIFY(t.name != QStringLiteral("Багровый"));
+    QVERIFY(t.magnetLink().contains(QStringLiteral("&tr=udp://tracker.example.org:6969/announce")));
 }
 
 void TestRuTrackerRuSource::audioDetailPageIsStrictWithoutVideo()

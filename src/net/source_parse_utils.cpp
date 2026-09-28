@@ -1,12 +1,49 @@
 #include "net/source_parse_utils.h"
 
+#include "common/infohash.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
+#include <QUrlQuery>
 
 namespace rats::net::sourceparse {
+
+QString magnetForHash(const QString& html, const QString& hash)
+{
+    if (!infohash::isValid(hash))
+        return {};
+    const QRegularExpression linkRe(
+        QStringLiteral(R"re(<a\b[^>]*\bhref\s*=\s*["'](magnet:\?[^"']+)["'][^>]*>)re"),
+        QRegularExpression::CaseInsensitiveOption);
+    auto links = linkRe.globalMatch(html);
+    while (links.hasNext()) {
+        QString magnet = links.next().captured(1);
+        magnet.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+        const QUrl url(magnet);
+        if (!url.isValid() || url.scheme() != QStringLiteral("magnet"))
+            continue;
+        const QUrlQuery query(url);
+        bool exact = false;
+        bool conflicting = false;
+        for (const auto& item : query.queryItems(QUrl::FullyDecoded)) {
+            if (item.first.compare(QStringLiteral("xt"), Qt::CaseInsensitive) != 0)
+                continue;
+            const QString prefix = QStringLiteral("urn:btih:");
+            if (item.second.startsWith(prefix, Qt::CaseInsensitive)
+                && infohash::normalize(item.second.mid(prefix.size())) == infohash::normalize(hash))
+                exact = true;
+            else
+                conflicting = true;
+        }
+        if (exact && !conflicting)
+            return magnet;
+    }
+    return {};
+}
+
 namespace {
 
 QChar cp1251Char(unsigned char b)

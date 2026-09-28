@@ -1662,3 +1662,48 @@ only failure until macOS Sequoia runtime verification.
 
 Build from Stage 38 HEAD `77d2c233dbe9db08f885d3d703291c7c64c4dc5e`;
 keep the Stage 39 PR draft and do not merge before user acceptance.
+
+Runtime acceptance reported by the user on 2026-09-28: Stage 39 search
+successfully displayed results from RuTor, RuTracker, Kinozal, MegaPeer and
+NNMClub. The missing Kinozal results issue is resolved in that build.
+
+### Stage 40 — keep the verified source magnet for external downloaders
+
+The user supplied two screenshots of the external `Add download` dialog. One
+visible portion was a percent-encoded release title (`dn=`); the other showed
+`tr=udp://...` announce URLs. These are fragments of magnet URIs in a narrow,
+horizontally scrolled input, not by themselves evidence of corrupt strings.
+The dialog remained at `Requesting information`; runtime completion was not
+established by either screenshot.
+
+Static audit: `Torrent::magnetLink()` previously fabricated only `xt` and `dn`
+for all results, discarding the tracker's published magnet and its `tr` fields.
+That can materially delay or prevent finding peers/metadata, especially when
+the source's own tracker is needed. This applies to every source magnet action
+in the result context menu and details panel. The application's *internal*
+DownloadService also starts from a bare info-hash; this stage changes only the
+magnet passed to the system's external downloader.
+
+Capture the source magnet from each exact page when present. RuTor also carries
+the magnet on its result row; its existing detail-page hash proof is required
+before use. For RuTracker, MegaPeer, NNMClub and Kinozal, accept only an exact
+verified source-page magnet with the same info-hash. Kinozal checks its page
+candidate only after the same-ID server-details endpoint proves the hash. The
+domain method revalidates `xt` before use, rejects conflicting `xt` fields and
+falls back to the existing `xt`/`dn` link if no valid source magnet is available.
+HTML `&amp;` separators are decoded so `tr` fields reach the downloader.
+
+Source availability:
+- RuTor: search-row and detail-page magnet; preserve source announce URLs.
+- RuTracker: exact topic-page magnet; preserve source announce URLs.
+- MegaPeer: exact detail-page magnet if present; .torrent hash fallback has no
+  source magnet to preserve.
+- NNMClub: exact page is normally verified using its public .torrent; use a
+  same-hash magnet if its page actually contains one, otherwise keep `xt`/`dn`.
+- Kinozal: exact server-details hash; use a matching magnet from its detail
+  page if present, otherwise keep `xt`/`dn`.
+
+The site `.torrent` files can include peers and tracker data unavailable to a
+hash-only magnet. This stage makes no guarantee that every source offers a
+tracker-rich magnet or that an external downloader will obtain metadata: the
+user's macOS runtime check is still required. Preserve the draft PR until then.

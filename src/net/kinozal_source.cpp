@@ -314,6 +314,15 @@ bool KinozalSource::applyDetailPage(
     info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("detailVerified")] = true;
     info[QStringLiteral("description")] = description;
+    const QRegularExpression magnetRe(
+        QStringLiteral(R"re(<a\b[^>]*\bhref\s*=\s*["'](magnet:\?[^"']+)["'])re"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch magnet = magnetRe.match(html);
+    if (magnet.hasMatch()) {
+        QString candidate = magnet.captured(1);
+        candidate.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+        info[QStringLiteral("sourceMagnetCandidate")] = candidate;
+    }
     torrent.info = info;
 
     sourceparse::populateTechnicalInfo(torrent);
@@ -369,6 +378,17 @@ bool KinozalSource::applyServerDetails(
     if (!torrent.hash.isEmpty() && torrent.hash != hash)
         return false;
     torrent.hash = hash;
+
+    // This endpoint proves the exact hash; only now may a magnet captured
+    // from the already verified details page be exposed to a downloader.
+    const QString sourceMagnet = torrent.info.value(QStringLiteral("sourceMagnetCandidate")).toString();
+    if (!sourceMagnet.isEmpty()) {
+        domain::Torrent candidate = torrent;
+        candidate.info[QStringLiteral("sourceVerified")] = true;
+        candidate.info[QStringLiteral("sourceMagnet")] = sourceMagnet;
+        if (candidate.magnetLink() == sourceMagnet)
+            torrent.info[QStringLiteral("sourceMagnet")] = sourceMagnet;
+    }
 
     const QRegularExpression pieceRe(
         QStringLiteral(

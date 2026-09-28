@@ -46,7 +46,7 @@ void TestRutorSource::searchRowCarriesExactProvenance()
         <td>26 Сен 26</td>
         <td>
           <a class="downgif" href="/download/471557"></a>
-          <a href="magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567">magnet</a>
+          <a href="magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&amp;tr=udp://tracker.rutor.info:2710/announce">magnet</a>
           <a href="/torrent/471557/police-academy">Police Academy BDRip-AVC 60 fps</a>
         </td>
         <td>3.63 GB</td>
@@ -67,6 +67,8 @@ void TestRutorSource::searchRowCarriesExactProvenance()
         QStringLiteral("https://rutor.info/torrent/471557/police-academy"));
     QCOMPARE(t.info.value(QStringLiteral("sourceTorrentUrl")).toString(),
         QStringLiteral("https://rutor.info/download/471557"));
+    QCOMPARE(t.info.value(QStringLiteral("sourceMagnet")).toString(),
+        QStringLiteral("magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567&tr=udp://tracker.rutor.info:2710/announce"));
     QVERIFY(!t.info.value(QStringLiteral("sourceVerified")).toBool());
     QCOMPARE(t.seeders, 42);
     QCOMPARE(t.leechers, 3);

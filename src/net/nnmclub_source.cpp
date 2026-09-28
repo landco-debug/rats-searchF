@@ -299,6 +299,9 @@ bool NnmClubSource::applyDetailPage(
     QJsonObject info = torrent.info;
     info[QStringLiteral("sourceProvider")] = QStringLiteral("nnmclub");
     info[QStringLiteral("sourceVerified")] = true;
+    const QString sourceMagnet = sourceparse::magnetForHash(html, torrent.hash);
+    if (!sourceMagnet.isEmpty())
+        info[QStringLiteral("sourceMagnet")] = sourceMagnet;
     info[QStringLiteral("sourceUrl")] = sourceUrl.toString();
     info[QStringLiteral("description")] = description;
     torrent.info = info;

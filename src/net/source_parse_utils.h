@@ -23,6 +23,8 @@ QString decodeEntities(QString text);
 QString stripHtml(QString html);
 QString htmlToText(QString html);
 QUrl resolveUrl(const QUrl& base, const QString& href);
+// Return a page's own magnet only when its btih is exactly the verified hash.
+QString magnetForHash(const QString& html, const QString& hash);
 qint64 parseSize(QString text);
 
 // Coarse source-native category mapping. Exact .torrent file classification is
