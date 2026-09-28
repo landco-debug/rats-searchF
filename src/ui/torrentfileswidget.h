@@ -56,6 +56,12 @@ public:
      */
     void setTorrent(const rats::domain::Torrent& torrent);
 
+    /// Show an asynchronous metadata fetch state instead of the misleading
+    /// "No files" label while a known torrent is being resolved.
+    void setLoading(const QString& hash, const QString& name);
+    /// Show a non-fatal resolution failure; selecting the row again retries.
+    void setError(const QString& hash, const QString& name, const QString& message);
+
     /**
      * @brief Whether the panel is currently showing a non-empty file list.
      */

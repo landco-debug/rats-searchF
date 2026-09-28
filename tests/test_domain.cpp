@@ -129,6 +129,21 @@ void TestDomain::testMagnetLink()
     QVERIFY(magnet.startsWith("magnet:?xt=urn:btih:a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"));
     // Name is percent-encoded (space -> %20)
     QVERIFY(magnet.contains("dn=Test%20Torrent"));
+
+    // A verified site magnet retains its tracker parameters and encoding.
+    t.info[QStringLiteral("sourceVerified")] = true;
+    t.info[QStringLiteral("sourceMagnet")]
+        = QStringLiteral("magnet:?xt=urn:btih:a94a8fe5ccb19ba61c4c0873d391e987982fbbd3&amp;dn=Site%20Title&amp;tr=udp://tracker.example.org:6969/announce");
+    QVERIFY(t.magnetLink().contains(QStringLiteral("&tr=udp://tracker.example.org:6969/announce")));
+    QVERIFY(!t.magnetLink().contains(QStringLiteral("&amp;")));
+
+    // Neither an unverified page nor a conflicting hash may supply a magnet.
+    t.info[QStringLiteral("sourceVerified")] = false;
+    QCOMPARE(t.magnetLink(), magnet);
+    t.info[QStringLiteral("sourceVerified")] = true;
+    t.info[QStringLiteral("sourceMagnet")]
+        = QStringLiteral("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=udp://other.example.org");
+    QCOMPARE(t.magnetLink(), magnet);
 }
 
 void TestDomain::testFile()
